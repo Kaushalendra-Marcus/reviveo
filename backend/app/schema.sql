@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id           TEXT NOT NULL,
     merchant_id        TEXT NOT NULL,
-    action             TEXT NOT NULL,
+    action              TEXT NOT NULL,
     execution_mechanism TEXT,
     confidence         REAL NOT NULL,
     risk_tier          TEXT NOT NULL,
@@ -93,17 +93,17 @@ CREATE TABLE IF NOT EXISTS recovery_attempts (
     event_id            TEXT NOT NULL,
     merchant_id         TEXT NOT NULL,
     attempt_number      INTEGER NOT NULL,
-    action              TEXT NOT NULL,
+    action               TEXT NOT NULL,
     execution_mechanism TEXT NOT NULL,
     amount_paise        INTEGER NOT NULL,
-    status              TEXT NOT NULL DEFAULT 'pending', -- pending|awaiting_outcome|recovered|expired|failed
-    execution_mode      TEXT NOT NULL DEFAULT 'dry_run', -- ExecutionMode
-    razorpay_ref        TEXT,   -- payment_link id / order id
-    reference_id        TEXT,   -- unique Razorpay Payment Link reference (doc §3.7)
-    notes_json          TEXT,   -- carries event_id, recovery_attempt_id, attempt_number
-    scheduled_for       TEXT,
-    created_at          TEXT NOT NULL,
-    resolved_at         TEXT,
+    status               TEXT NOT NULL DEFAULT 'pending', -- pending|awaiting_outcome|recovered|expired|failed
+    execution_mode       TEXT NOT NULL DEFAULT 'dry_run', -- ExecutionMode
+    razorpay_ref         TEXT,   -- payment_link id / order id
+    reference_id          TEXT,   -- unique Razorpay Payment Link reference (doc §3.7)
+    notes_json            TEXT,   -- carries event_id, recovery_attempt_id, attempt_number
+    scheduled_for          TEXT,
+    created_at             TEXT NOT NULL,
+    resolved_at             TEXT,
     UNIQUE (event_id, attempt_number)
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_event ON recovery_attempts (event_id);
@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     event_id           TEXT NOT NULL,
     merchant_id        TEXT NOT NULL,
     stage              TEXT NOT NULL,   -- AuditStage
-    message            TEXT,
+    message             TEXT,
     payload_json       TEXT,
     ai_used            INTEGER NOT NULL DEFAULT 0,
     ai_model           TEXT,
