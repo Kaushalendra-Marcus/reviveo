@@ -8,6 +8,9 @@ import { BoundedAutonomy } from "@/components/homepage/bounded-autonomy";
 import { Hero } from "@/components/homepage/hero";
 import { Footer } from "@/components/homepage/footer";
 import { SiteNav } from "@/components/homepage/site-nav";
+import { SpotlightCards } from "@/components/homepage/spotlight-cards";
+import { IntegrationCarousel } from "@/components/homepage/integration-carousel";
+import { ProductHighlights } from "@/components/homepage/product-highlights";
 
 export default function Home() {
   return (
@@ -26,6 +29,15 @@ export default function Home() {
         <section id="product">
           <RecoveryPipelineDiagram />
         </section>
+
+        {/* DASHBOARD PREVIEW — spotlight cards, fitted to Reviveo palette */}
+        <SpotlightCards />
+
+        {/* INTEGRATION ORBITAL — Antimetal-inspired logo carousel */}
+        <IntegrationCarousel />
+
+        {/* WHY TEAMS CHOOSE REVIVEO — individual spotlight-effect feature cards */}
+        <ProductHighlights />
 
         {/* HOW REVIVEO DECIDES — signal / context / decision / action */}
         <DecisionContext />

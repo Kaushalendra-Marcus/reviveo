@@ -4,7 +4,6 @@ import React, { useMemo, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { MathUtils, Vector3, Color } from 'three';
 import * as THREE from 'three';
-import { Environment, Lightformer } from '@react-three/drei';
 
 const vertexShader = `
 uniform float u_intensity;
@@ -136,12 +135,12 @@ const Blob: React.FC<{ color?: string }> = ({ color = REVIVEO_BLUE }) => {
   return (
     <mesh
       ref={mesh}
-      scale={1.35}
+      scale={1.75}
       position={[0, 0, 0]}
       onPointerOver={() => (hover.current = true)}
       onPointerOut={() => (hover.current = false)}
     >
-      <icosahedronGeometry args={[2, 16]} />
+      <icosahedronGeometry args={[2.2, 16]} />
       <shaderMaterial vertexShader={vertexShader} fragmentShader={fragmentShader} uniforms={uniforms} />
     </mesh>
   );
@@ -154,31 +153,16 @@ export const BlobCanvas: React.FC<{ className?: string; color?: string }> = ({
   return (
     <div className={className ?? 'absolute inset-0 h-full w-full'}>
       <Canvas
-        camera={{ position: [0, 0, 8], fov: 45 }}
+        camera={{ position: [0, 0, 8], fov: 38 }}
         dpr={[1, 1.5]}
         gl={{ antialias: true, alpha: true }}
         style={{ background: 'transparent' }}
       >
-        {/* soft studio light + HDRI for Reviveo-blue reflections */}
-        <Environment preset="studio" environmentIntensity={0.6} />
+        {/* Shader blob is self-lit — only need a faint ambient so the canvas transparent blends on slate-950 */}
+        <ambientLight intensity={0.9} />
+        <directionalLight position={[5, 5, 5]} intensity={1.1} color="#ffffff" />
+        <pointLight position={[-4, 2, -4]} intensity={0.7} color="#3E7AEE" />
         <Blob color={color} />
-        <Environment files="https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/dancing_hall_1k.hdr" resolution={1024}>
-          <group rotation={[-Math.PI / 3, 0, 0]}>
-            <Lightformer intensity={4} rotation-x={Math.PI / 2} position={[0, 5, -9]} scale={[10, 10, 1]} />
-            {[2, 0, 2, 0, 2, 0, 2, 0].map((x, i) => (
-              <Lightformer
-                key={i}
-                form="circle"
-                intensity={3.5}
-                rotation={[Math.PI / 2, 0, 0]}
-                position={[x, 4, i * 4]}
-                scale={[4, 1, 1]}
-              />
-            ))}
-            <Lightformer intensity={2} rotation-y={Math.PI / 2} position={[-5, 1, -1]} scale={[50, 2, 1]} />
-            <Lightformer intensity={2} rotation-y={-Math.PI / 2} position={[10, 1, 0]} scale={[50, 2, 1]} />
-          </group>
-        </Environment>
       </Canvas>
     </div>
   );

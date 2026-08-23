@@ -35,7 +35,7 @@ export const Footer = () => {
   const letters = 'REVIVEO'.split('');
 
   const letterVariants = {
-    hidden: { y: 110 },
+    hidden: { y: 180 },
     visible: (i: number) => ({
       y: 0,
       transition: {
@@ -199,20 +199,20 @@ export const Footer = () => {
           </div>
         </div>
 
-        {/* wordmark — animated reveal + 3D blob fitted inside, not fullscreen */}
+        {/* wordmark — animated reveal + 3D blob fitted inside, extra-large */}
         <div
           ref={wordmarkRef}
-          className="relative mt-10 overflow-hidden border-y border-white/10 py-6 md:py-8"
+          className="relative mt-10 overflow-hidden border-y border-white/10 py-10 md:py-16"
         >
-          {/* 3D blob — contained to wordmark height, Reviveo blue (#3E7AEE) */}
+          {/* 3D blob — larger, centered behind wordmark */}
           <div className="absolute inset-0">
-            <BlobCanvas className="absolute inset-0 h-full w-full opacity-90" color="#3E7AEE" />
+            <BlobCanvas className="absolute inset-0 h-full w-full opacity-95 scale-[1.05]" color="#3E7AEE" />
             {/* fade the 3D edges so it feels like ambient glow, not a box */}
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/30 via-transparent to-slate-950/60" />
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/20 via-transparent to-slate-950/55" />
           </div>
 
           <div
-            className="relative z-10 flex select-none items-center justify-between gap-1 font-black tracking-[-0.06em] leading-none text-blue-500 drop-shadow-[0_2px_18px_rgba(62,122,238,0.35)]"
+            className="relative z-10 flex select-none items-center justify-between gap-1 font-black tracking-[-0.06em] leading-none text-blue-500 drop-shadow-[0_2px_18px_rgba(62,122,238,0.4)]"
             aria-label="REVIVEO"
           >
             {letters.map((ch, i) => (
@@ -222,7 +222,7 @@ export const Footer = () => {
                 variants={letterVariants}
                 initial="hidden"
                 animate={isInView ? 'visible' : 'hidden'}
-                className="inline-block text-[11vw] sm:text-[10vw] md:text-[8.5vw] lg:text-[92px] xl:text-[108px]"
+                className="inline-block text-[15vw] sm:text-[13.5vw] md:text-[12.5vw] lg:text-[150px] xl:text-[190px] 2xl:text-[220px]"
                 style={{ display: 'inline-block', overflow: 'hidden' }}
               >
                 {ch}

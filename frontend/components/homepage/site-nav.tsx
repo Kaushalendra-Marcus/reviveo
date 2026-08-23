@@ -4,11 +4,17 @@ import React from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { ArrowRight } from 'lucide-react'
+import { useMotionValueEvent, useScroll } from 'framer-motion'
 
 import { Button } from '@/components/ui/button'
 import { TimelineAnimation } from '@/components/ui/timeline-animation'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import MotionDrawer from '@/components/ui/motion-drawer'
+import { cn } from '@/lib/utils'
+
+// Pill starts shrinking as soon as you've scrolled past this many pixels,
+// and goes back to full width once you're back within it of the top.
+const SCROLL_SHRINK_THRESHOLD = 8
 
 // Site-wide floating navbar for the marketing pages. Rendered as a sibling
 // of <main> in page.tsx (NOT nested inside Hero's overflow-hidden section)
@@ -18,6 +24,15 @@ import MotionDrawer from '@/components/ui/motion-drawer'
 export const SiteNav = () => {
   const navRef = React.useRef<HTMLDivElement>(null)
   const isMobile = useMediaQuery('(max-width: 768px)')
+  const [isScrolled, setIsScrolled] = React.useState(false)
+
+  // Full-width pill at the top; shrinks a little once you scroll down,
+  // back to full-width the moment you're back at the top.
+  const { scrollY } = useScroll()
+  useMotionValueEvent(scrollY, 'change', (latest) => {
+    const next = latest > SCROLL_SHRINK_THRESHOLD
+    setIsScrolled((prev) => (prev === next ? prev : next))
+  })
 
   return (
     // transform-gpu + will-change-transform force this onto its own GPU
@@ -81,7 +96,12 @@ export const SiteNav = () => {
 
       {/* Desktop header — floating pill navbar */}
       {!isMobile && (
-        <header className="mx-auto w-full max-w-7xl px-6 pt-6 lg:px-8">
+        <header
+          className={cn(
+            'mx-auto w-full px-6 pt-6 transition-[max-width] duration-300 ease-out lg:px-8',
+            isScrolled ? 'max-w-5xl' : 'max-w-7xl'
+          )}
+        >
           <TimelineAnimation
             animationNum={1}
             timelineRef={navRef}
