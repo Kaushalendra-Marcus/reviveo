@@ -14,12 +14,9 @@ import {
 
 import { Button } from '@/components/ui/button'
 import { TimelineAnimation } from '@/components/ui/timeline-animation'
-import { useMediaQuery } from '@/hooks/use-media-query'
-import MotionDrawer from '@/components/ui/motion-drawer'
 
 export const Hero = () => {
   const timelineRef = React.useRef<HTMLDivElement>(null)
-  const isMobile = useMediaQuery('(max-width: 768px)')
   const prefersReducedMotion = useReducedMotion()
 
   return (
@@ -71,123 +68,14 @@ export const Hero = () => {
       */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_60%_45%_at_50%_15%,rgba(2,6,23,0)_0%,rgba(2,6,23,0.15)_60%,rgba(2,6,23,0.4)_100%)]" />
 
-      {/* Mobile top bar */}
-      {isMobile && (
-        <div className="relative z-20 flex w-full items-center justify-between gap-4 px-5 pt-4">
-          <MotionDrawer
-            direction="left"
-            width={280}
-            backgroundColor={'#ffffff'}
-            clsBtnClassName="bg-slate-800 border-r border-slate-900 text-white"
-            contentClassName="bg-white border-r border-slate-200 text-slate-950"
-            btnClassName="bg-white text-slate-950 relative w-fit p-2 left-0 top-0 rounded-full shadow-xs border border-slate-200"
-          >
-            <nav className="space-y-4">
-              <Link href="/" className="mb-2 flex items-center gap-2 text-slate-950">
-                <Image
-                  src="/logo.png"
-                  alt="Reviveo"
-                  width={28}
-                  height={28}
-                  className="size-7 object-contain"
-                />
-                <span className="font-bold">Reviveo</span>
-              </Link>
-              <a href="#product" className="block rounded-sm p-2 hover:bg-slate-100">
-                Product
-              </a>
-              <a href="#how-it-works" className="block rounded-sm p-2 hover:bg-slate-100">
-                How It Works
-              </a>
-              <a href="#safety" className="block rounded-sm p-2 hover:bg-slate-100">
-                Safety
-              </a>
-              <Link href="/dashboard" className="block rounded-sm p-2 hover:bg-slate-100">
-                Dashboard
-              </Link>
-            </nav>
-          </MotionDrawer>
-
-          <Button
-            asChild
-            size="sm"
-            className="rounded-xl bg-gradient-to-r from-blue-700 to-blue-600"
-          >
-            <Link href="/dashboard">
-              View Dashboard
-              <ArrowRight className="size-4" />
-            </Link>
-          </Button>
-        </div>
-      )}
-
-      {/* Desktop header — floating pill navbar */}
-      {!isMobile && (
-        <header className="relative z-20 mx-auto w-full max-w-7xl px-6 pt-6 lg:px-8">
-          <TimelineAnimation
-            animationNum={1}
-            timelineRef={timelineRef}
-            className="flex items-center justify-between rounded-xl border border-white bg-white/80 p-2 shadow-sm backdrop-blur-xl"
-          >
-            <Link href="/" className="flex items-center gap-2 pl-2">
-              <Image
-                src="/logo.png"
-                alt="Reviveo"
-                width={32}
-                height={32}
-                className="size-8 object-contain"
-              />
-              <div className="flex flex-col leading-tight">
-                <span className="text-base font-bold tracking-tight text-slate-950">
-                  Reviveo
-                </span>
-                <span className="-mt-0.5 text-[10px] font-medium text-slate-500">
-                  AI Revenue Recovery Agent
-                </span>
-              </div>
-            </Link>
-
-            <nav className="flex items-center gap-8 text-sm font-medium text-slate-600">
-              <a href="#product" className="transition-colors hover:text-blue-700">
-                Product
-              </a>
-              <a href="#how-it-works" className="transition-colors hover:text-blue-700">
-                How It Works
-              </a>
-              <a href="#safety" className="transition-colors hover:text-blue-700">
-                Safety
-              </a>
-              <Link href="/dashboard" className="transition-colors hover:text-blue-700">
-                Dashboard
-              </Link>
-            </nav>
-
-            <div className="flex items-center gap-2">
-              <Button
-                asChild
-                variant="ghost"
-                size="sm"
-                className="font-medium text-slate-700"
-              >
-                <Link href="/login">Log in</Link>
-              </Button>
-              <Button
-                asChild
-                size="sm"
-                className="rounded-lg bg-gradient-to-r from-blue-700 to-blue-600 hover:from-blue-800 hover:to-blue-700"
-              >
-                <Link href="/dashboard">
-                  View Dashboard
-                  <ArrowRight className="size-4" />
-                </Link>
-              </Button>
-            </div>
-          </TimelineAnimation>
-        </header>
-      )}
+      {/* Nav now lives in <SiteNav />, rendered as a sibling of <main> in
+          page.tsx — it used to live here, but this section's overflow-hidden
+          clips `position: fixed` descendants, which hid the nav once you
+          scrolled past the hero. Content below gets extra top padding
+          (pt-28 lg:pt-32) so it isn't hidden under the now-fixed nav. */}
 
       {/* Hero content */}
-      <div className="relative z-10 mx-auto flex max-w-7xl flex-col items-center gap-6 px-6 pb-20 pt-16 text-center lg:px-8">
+      <div className="relative z-10 mx-auto flex max-w-7xl flex-col items-center gap-6 px-6 pb-20 pt-28 text-center lg:px-8 lg:pt-32">
         <TimelineAnimation
           animationNum={2}
           timelineRef={timelineRef}
