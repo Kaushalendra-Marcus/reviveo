@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import RecoveryPipelineDiagram from "@/components/RecoveryPipelineDiagram";
 
 const workflow = [
   { label: "Payment Event", icon: ReceiptText },
@@ -352,7 +353,10 @@ export default function Home() {
           </div>
         </div>
       </section>
-
+      
+      <section>
+        <RecoveryPipelineDiagram/>
+      </section>
       {/* DASHBOARD */}
       <section
         id="dashboard"

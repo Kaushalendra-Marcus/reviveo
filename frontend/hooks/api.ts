@@ -1,7 +1,4 @@
-import {
-  ACTIVE_EVENT_STATUSES,
-  type EventStatus,
-} from "@/lib/config";
+import { ACTIVE_EVENT_STATUSES } from "@/lib/config";
 import type {
   BatchRunResult,
   Cause,
@@ -10,6 +7,7 @@ import type {
   EventDetail,
   EventsQuery,
   AuditTrailResponse,
+  EventStatus,
   GuardrailConfig,
   GuardrailConfigUpdate,
   HealthResponse,
