@@ -23,9 +23,9 @@ _DEFAULT_GUARDRAILS = {
     "low_confidence": 0.50,
     "max_retries": 3,
     "cooldown_hours": 24,
-    "max_autonomous_recovery_amount_paise": 500000,   # ₹5,000
-    "daily_recovery_value_cap_paise": 5000000,        # ₹50,000
-    "daily_contact_cap": 100,
+    "max_autonomous_recovery_amount_paise": 500000,     # ₹5,000 per attempt
+    "daily_recovery_value_cap_paise": 50000000,         # ₹5,00,000/day
+    "daily_contact_cap": 500,
     "allowed_channels": ["email", "payment_link"],
 }
 

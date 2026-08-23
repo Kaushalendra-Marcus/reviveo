@@ -1,6 +1,7 @@
 """Reviveo FastAPI application entrypoint."""
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import db
 from .config import settings
 from .logging_config import get_logger
+from .pipeline.scheduler import run_scheduler_loop
 from .seed import ensure_seed
 
 logger = get_logger("reviveo.main")
@@ -24,7 +26,19 @@ async def lifespan(app: FastAPI):
                            "razorpay": settings.razorpay_configured,
                            "ai": settings.ai_configured}},
     )
+
+    scheduler_task: asyncio.Task | None = None
+    if settings.scheduler_enabled:
+        scheduler_task = asyncio.create_task(run_scheduler_loop())
+
     yield
+
+    if scheduler_task is not None:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Reviveo API", version="1.0.0", lifespan=lifespan)

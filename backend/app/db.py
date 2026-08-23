@@ -182,6 +182,14 @@ def add_customer_recovered(merchant_id: str, customer_id: str, amount_paise: int
     )
 
 
+def incr_customer_failed_count(merchant_id: str, customer_id: str) -> None:
+    execute(
+        "UPDATE customers SET failed_payment_count = failed_payment_count + 1 "
+        "WHERE merchant_id=? AND id=?",
+        (merchant_id, customer_id),
+    )
+
+
 # ── subscriptions ─────────────────────────────────────────────────────────────
 def insert_subscription(s: dict) -> None:
     execute(
@@ -511,6 +519,17 @@ def get_last_simulation(merchant_id: str) -> Optional[dict]:
     return row
 
 
+def list_simulations(merchant_id: str, limit: int = 20) -> list[dict]:
+    rows = query_all(
+        "SELECT * FROM simulation_runs WHERE merchant_id=? ORDER BY created_at DESC LIMIT ?",
+        (merchant_id, limit),
+    )
+    for row in rows:
+        row["baseline"] = json.loads(row.pop("baseline_json") or "null")
+        row["treatment"] = json.loads(row.pop("treatment_json") or "null")
+    return rows
+
+
 # ── reporting / aggregation ───────────────────────────────────────────────────
 def summary_metrics(merchant_id: str, since: str) -> dict:
     at_risk = query_one(
@@ -546,6 +565,15 @@ def timeseries_recovered(merchant_id: str, since: str) -> list[dict]:
     return query_all(
         "SELECT substr(recovered_at,1,10) day, COALESCE(SUM(amount_paise),0) amount_paise, "
         "COUNT(*) count FROM recovered_payments WHERE merchant_id=? AND recovered_at>=? "
+        "GROUP BY day ORDER BY day",
+        (merchant_id, since),
+    )
+
+
+def timeseries_at_risk(merchant_id: str, since: str) -> list[dict]:
+    return query_all(
+        "SELECT substr(created_at,1,10) day, COALESCE(SUM(amount_paise),0) amount_paise, "
+        "COUNT(*) count FROM events WHERE merchant_id=? AND created_at>=? "
         "GROUP BY day ORDER BY day",
         (merchant_id, since),
     )
