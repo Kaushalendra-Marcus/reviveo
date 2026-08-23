@@ -3,6 +3,7 @@
 import React from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { motion, useReducedMotion } from 'framer-motion'
 import {
   ArrowRight,
   CheckCircle2,
@@ -19,30 +20,56 @@ import MotionDrawer from '@/components/ui/motion-drawer'
 export const Hero = () => {
   const timelineRef = React.useRef<HTMLDivElement>(null)
   const isMobile = useMediaQuery('(max-width: 768px)')
+  const prefersReducedMotion = useReducedMotion()
 
   return (
     <section
       ref={timelineRef}
-      className="relative min-h-[860px] overflow-hidden bg-white text-slate-950"
+      className="relative min-h-dvh overflow-hidden bg-slate-950 text-slate-950"
     >
-      {/* Background image (same asset the previous hero used) */}
-      <div className="absolute inset-0 h-full w-full">
+      {/* Background image (same asset the previous hero used) — soft fade/zoom-settle
+          on entrance, then a slow, barely-visible ambient drift so the scene feels
+          alive without competing with the text for attention. */}
+      <motion.div
+        className="absolute inset-0 h-full w-full"
+        initial={{ opacity: 0, scale: 1.08 }}
+        animate={
+          prefersReducedMotion
+            ? { opacity: 1, scale: 1 }
+            : { opacity: 1, scale: [1.08, 1, 1.05, 1] }
+        }
+        transition={
+          prefersReducedMotion
+            ? { duration: 0.6, ease: 'easeOut' }
+            : {
+                opacity: { duration: 1.4, ease: 'easeOut' },
+                scale: {
+                  duration: 24,
+                  times: [0, 0.08, 0.54, 1],
+                  repeat: Infinity,
+                  repeatType: 'loop',
+                  ease: 'easeInOut',
+                },
+              }
+        }
+      >
         <Image
-          src="/hero-bg-image.png"
+          src="/hero-bg_image.png"
           alt=""
           fill
-          preload
+          priority
           sizes="100vw"
           className="object-cover object-center"
         />
-      </div>
+      </motion.div>
       {/*
-        Whiteout overlay — kept deliberately minimal, matching public/sample.png:
-        the reference keeps the road/floor lines crisp all the way to the bottom,
-        it does not wash the image out. Just enough lift behind the headline for
-        contrast, fading to fully transparent well before the bottom of the section.
+        Depth vignette — the source image is already dark, so instead of a
+        whiteout wash (which fought the dark palette and made the headline
+        unreadable) this just deepens the far edges slightly for focus.
+        Readability comes from light text colors below, not from washing
+        the image out.
       */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_55%_38%_at_50%_20%,rgba(255,255,255,0.28)_0%,rgba(255,255,255,0.13)_40%,rgba(255,255,255,0.04)_70%,rgba(255,255,255,0)_100%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_60%_45%_at_50%_15%,rgba(2,6,23,0)_0%,rgba(2,6,23,0.15)_60%,rgba(2,6,23,0.4)_100%)]" />
 
       {/* Mobile top bar */}
       {isMobile && (
@@ -164,10 +191,10 @@ export const Hero = () => {
         <TimelineAnimation
           animationNum={2}
           timelineRef={timelineRef}
-          className="mx-auto flex w-fit items-center gap-2 rounded-full border border-blue-200 bg-white/60 px-5 py-2 backdrop-blur-md"
+          className="mx-auto flex w-fit items-center gap-2 rounded-full border border-blue-400/30 bg-white/10 px-5 py-2 backdrop-blur-md"
         >
-          <span className="text-base text-blue-700">✦</span>
-          <span className="text-sm font-semibold uppercase tracking-[0.14em] text-blue-800">
+          <span className="text-base text-blue-300">✦</span>
+          <span className="text-sm font-semibold uppercase tracking-[0.14em] text-blue-200">
             AI-Powered Revenue Recovery
           </span>
         </TimelineAnimation>
@@ -176,11 +203,11 @@ export const Hero = () => {
           as="h1"
           animationNum={3}
           timelineRef={timelineRef}
-          className="mx-auto mt-3 max-w-5xl text-5xl font-bold tracking-[-0.045em] text-slate-950 sm:text-6xl lg:text-8xl"
+          className="mx-auto mt-3 max-w-5xl text-5xl font-bold tracking-[-0.045em] text-white sm:text-6xl lg:text-8xl"
         >
           Recover revenue
           <br />
-          <span className="bg-gradient-to-r from-blue-700 to-blue-500 bg-clip-text text-transparent">
+          <span className="bg-gradient-to-r from-blue-400 via-indigo-300 to-purple-300 bg-clip-text text-transparent">
             before it disappears.
           </span>
         </TimelineAnimation>
@@ -189,7 +216,7 @@ export const Hero = () => {
           as="p"
           animationNum={4}
           timelineRef={timelineRef}
-          className="mx-auto max-w-3xl text-lg leading-8 text-slate-600 sm:text-xl"
+          className="mx-auto max-w-3xl text-lg leading-8 text-slate-300 sm:text-xl"
         >
           Reviveo detects failed and at-risk payments, understands the root
           cause, chooses the right recovery action, and brings your revenue
@@ -228,24 +255,24 @@ export const Hero = () => {
         <TimelineAnimation
           animationNum={6}
           timelineRef={timelineRef}
-          className="mt-6 flex flex-wrap items-center justify-center gap-x-8 gap-y-4 text-sm font-medium text-slate-600"
+          className="mt-6 flex flex-wrap items-center justify-center gap-x-8 gap-y-4 text-sm font-medium text-slate-300"
         >
           <div className="flex items-center gap-2">
-            <ShieldCheck className="size-5 text-blue-600" />
+            <ShieldCheck className="size-5 text-blue-400" />
             <span>Enterprise-grade security</span>
           </div>
 
-          <span className="hidden size-1 rounded-full bg-slate-400 sm:block" />
+          <span className="hidden size-1 rounded-full bg-slate-500 sm:block" />
 
           <div className="flex items-center gap-2">
-            <LockKeyhole className="size-5 text-blue-600" />
+            <LockKeyhole className="size-5 text-blue-400" />
             <span>Built-in guardrails</span>
           </div>
 
-          <span className="hidden size-1 rounded-full bg-slate-400 sm:block" />
+          <span className="hidden size-1 rounded-full bg-slate-500 sm:block" />
 
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="size-5 text-blue-600" />
+            <CheckCircle2 className="size-5 text-blue-400" />
             <span>Full audit trail</span>
           </div>
         </TimelineAnimation>
