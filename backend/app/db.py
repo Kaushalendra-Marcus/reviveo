@@ -352,11 +352,18 @@ def update_recovery_attempt(recovery_attempt_id: str, **fields) -> None:
             (*fields.values(), recovery_attempt_id))
 
 
-def last_attempt_time(event_id: str) -> Optional[str]:
-    row = query_one(
-        "SELECT MAX(created_at) t FROM recovery_attempts WHERE event_id=?",
-        (event_id,),
-    )
+def last_attempt_time(event_id: str, *, exclude: Optional[str] = None) -> Optional[str]:
+    if exclude:
+        row = query_one(
+            "SELECT MAX(created_at) t FROM recovery_attempts "
+            "WHERE event_id=? AND recovery_attempt_id != ?",
+            (event_id, exclude),
+        )
+    else:
+        row = query_one(
+            "SELECT MAX(created_at) t FROM recovery_attempts WHERE event_id=?",
+            (event_id,),
+        )
     return row["t"] if row else None  # type: ignore[index]
 
 
