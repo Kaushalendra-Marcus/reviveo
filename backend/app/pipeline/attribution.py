@@ -1,180 +1,101 @@
-"""Attribution engine — the proof-of-recovery chain (doc §3.1).
-
-A payment counts as recovered ONLY when it resolves a recovery_attempt, lands
-inside the merchant's recovery window, and covers the outstanding obligation.
-The window verdict is stored (`within_window`), never silently dropped. The
-UNIQUE(recovered_razorpay_payment_id) constraint in the schema makes the
-headline metric double-count-proof.
+"""Recovery attribution (doc §3.1). A payment counts as recovered revenue
+only when it (1) explicitly resolves a specific `recovery_attempt` — never by
+matching customer email, customer id, or amount alone — (2) falls within the
+merchant's configured recovery window, and (3) its amount satisfies the
+outstanding obligation. The result of the window/amount check is always
+stored, never hidden: a late or short payment is recorded honestly rather
+than silently excluded or silently counted.
 """
 from __future__ import annotations
 
-import random
-import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import db
-from ..enums import AuditStage, EventType, EventStatus, SubscriptionState
-from ..logging_config import get_logger
-from .state_machine import transition
-
-logger = get_logger("reviveo.attribution")
-
-# Deterministic synthetic outcome probabilities per mechanism — used only when
-# execution_mode == dry_run and event origin is synthetic.
-_SYNTH_SUCCESS_RATE = {
-    "checkout": 0.80,
-    "payment_link": 0.70,
-    "scheduled_recovery_payment": 0.60,
-    "new_recovery_payment": 0.55,
-    "manual_charge": 0.50,
-    "native_subscription_retry": 0.65,
-    "reminder_only": 0.45,
-}
+from ..enums import EventStatus
 
 
-def _parse(value: str) -> datetime:
-    return datetime.fromisoformat(value)
+@dataclass(frozen=True)
+class AttributionResult:
+    accepted: bool          # True iff counted as recovered revenue
+    within_window: bool
+    satisfies_amount: bool
+    reason: str
 
 
-def iso_plus_days(ts: str, days: int) -> str:
-    return (_parse(ts) + timedelta(days=days)).isoformat()
+def _parse_iso(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def simulate_outcome(attempt: dict) -> dict:
-    """Deterministic pseudo-outcome seeded by attempt id (reproducible)."""
-    rate = _SYNTH_SUCCESS_RATE.get(attempt["execution_mechanism"], 0.5)
-    seed = hashlib.sha256(f"{attempt['recovery_attempt_id']}|outcome".encode()).hexdigest()
-    paid = random.Random(seed).random() < rate
-    payment_id = f"pay_syn_{seed[:12]}" if paid else None
-    return {
-        "paid": paid,
-        "razorpay_payment_id": payment_id,
-        "amount_paise": attempt["amount_paise"] if paid else 0,
-        "occurred_at": db.now_iso(),
-    }
+def attribute_payment(
+    *, recovery_attempt_id: str, razorpay_payment_id: str, amount_paise: int,
+    recovery_window_days: int,
+) -> AttributionResult:
+    """Called once a specific recovery_attempt's linked payment is confirmed
+    (from the `payment_link.paid` outcome webhook, or the synthetic batch
+    runner's simulated outcome). Idempotent: `UNIQUE(recovered_razorpay_payment_id)`
+    means the same confirmed payment can never be counted twice, even under
+    webhook retries.
+    """
+    attempt = db.get_recovery_attempt(recovery_attempt_id)
+    if attempt is None:
+        return AttributionResult(accepted=False, within_window=False, satisfies_amount=False,
+                                  reason=f"No recovery_attempt found for '{recovery_attempt_id}'.")
 
+    event = db.get_event(attempt["event_id"])
+    if event is None:
+        return AttributionResult(accepted=False, within_window=False, satisfies_amount=False,
+                                  reason=f"No event found for attempt's event_id '{attempt['event_id']}'.")
 
-def apply_outcome(
-    event: dict,
-    attempt: dict,
-    *,
-    paid: bool,
-    razorpay_payment_id: Optional[str] = None,
-    amount_paise: int = 0,
-    occurred_at: Optional[str] = None,
-) -> dict:
-    """Resolve an attempt with a real or simulated payment outcome.
-
-    Returns a summary dict describing what attribution decided."""
-    cfg = db.get_guardrail_config(event["merchant_id"])
-    occurred_at = occurred_at or db.now_iso()
-    result: dict = {"paid": paid, "counted_as_recovered": False}
-
-    if not paid:
-        remaining = cfg["max_retries"] - db.count_attempts(event["event_id"])
-        db.update_recovery_attempt(attempt["recovery_attempt_id"], status="failed",
-                                   resolved_at=occurred_at)
-        if remaining <= 0:
-            transition(event["event_id"], EventStatus.failed)
-        db.insert_audit({
-            "event_id": event["event_id"],
-            "merchant_id": event["merchant_id"],
-            "stage": AuditStage.outcome.value,
-            "message": f"Recovery attempt #{attempt['attempt_number']} did not convert; "
-                       f"{max(remaining, 0)} attempt(s) remain.",
-            "payload": {"paid": False, "attempt_number": attempt["attempt_number"]},
-        })
-        result["attempts_remaining"] = max(remaining, 0)
-        return result
-
-    # Window + obligation checks (§3.1).
-    within_window = False
-    try:
-        within_window = (
-            _parse(occurred_at)
-            <= _parse(iso_plus_days(attempt["created_at"], cfg["recovery_window_days"]))
-            and amount_paise >= attempt["amount_paise"]
-            and event["status"] not in ("failed", "closed")
-        )
-    except (ValueError, TypeError):
-        logger.warning("could not parse timestamps for window check (event %s)",
-                       event["event_id"])
+    now = datetime.now(timezone.utc)
+    created = _parse_iso(event["created_at"])
+    within_window = (now - created) <= timedelta(days=recovery_window_days)
+    satisfies_amount = amount_paise >= attempt["amount_paise"]
+    accepted = within_window and satisfies_amount
 
     inserted = db.insert_recovered_payment({
-        "event_id": event["event_id"],
-        "merchant_id": event["merchant_id"],
-        "recovery_attempt_id": attempt["recovery_attempt_id"],
-        "recovered_razorpay_payment_id": razorpay_payment_id or f"pay_{attempt['recovery_attempt_id']}",
-        "amount_paise": amount_paise,
-        "within_window": within_window,
+        "event_id": attempt["event_id"], "merchant_id": attempt["merchant_id"],
+        "recovery_attempt_id": recovery_attempt_id,
+        "recovered_razorpay_payment_id": razorpay_payment_id,
+        "amount_paise": amount_paise, "within_window": accepted,
     })
-    result["within_window"] = within_window
-    result["newly_recorded"] = inserted
-
     if not inserted:
-        # Idempotent replay of the same outcome webhook — no double counting.
-        db.insert_audit({
-            "event_id": event["event_id"], "merchant_id": event["merchant_id"],
-            "stage": AuditStage.outcome.value,
-            "message": "Duplicate recovery payment id ignored (already attributed).",
-            "payload": {"razorpay_payment_id": razorpay_payment_id},
-        })
-        return result
+        return AttributionResult(accepted=False, within_window=within_window,
+                                  satisfies_amount=satisfies_amount,
+                                  reason="Payment id already attributed (idempotent no-op).")
 
-    if within_window:
-        fields = {"payment_recovered": 1}
-        if event["type"] in (EventType.subscription_halted.value, EventType.subscription_failed.value):
-            sub_id = event.get("subscription_id")
-            if sub_id:
-                db.update_subscription_state(sub_id, SubscriptionState.active.value)
-            fields.update({"subscription_restored": 1, "subscription_state_after": "active"})
-        db.update_event(event["event_id"], **fields)
-        transition(event["event_id"], EventStatus.recovered)
-        db.update_recovery_attempt(attempt["recovery_attempt_id"], status="recovered",
-                                   resolved_at=occurred_at)
-        db.add_customer_recovered(event["merchant_id"], event.get("customer_id") or "", amount_paise)
-        db.incr_daily_counter(event["merchant_id"], value_paise=amount_paise)
-        result["counted_as_recovered"] = True
-        message = (f"Recovered ₹{amount_paise / 100:.2f} via payment "
-                   f"{razorpay_payment_id} within the {cfg['recovery_window_days']}-day window.")
+    db.update_recovery_attempt(recovery_attempt_id, status="recovered", resolved_at=now.isoformat())
+
+    if accepted:
+        db.update_event(attempt["event_id"], status=EventStatus.recovered.value,
+                         payment_recovered=1, razorpay_payment_id=razorpay_payment_id)
+        customer_id = event.get("customer_id")
+        if customer_id:
+            db.add_customer_recovered(attempt["merchant_id"], customer_id, amount_paise)
+        reason = "Recovered within window and amount satisfied."
     else:
-        db.update_recovery_attempt(attempt["recovery_attempt_id"], status="expired",
-                                   resolved_at=occurred_at)
-        message = ("Payment succeeded but fell OUTSIDE the recovery window or did not "
-                   "cover the obligation — recorded, not counted as recovered.")
+        problems = []
+        if not within_window:
+            problems.append("outside the recovery window")
+        if not satisfies_amount:
+            problems.append("amount below the outstanding obligation")
+        reason = f"Payment received but {' and '.join(problems)} — not counted as recovered revenue."
+        db.update_event(attempt["event_id"], status=EventStatus.closed.value,
+                         razorpay_payment_id=razorpay_payment_id)
 
-    db.insert_audit({
-        "event_id": event["event_id"], "merchant_id": event["merchant_id"],
-        "stage": AuditStage.outcome.value, "message": message,
-        "payload": {"paid": True, "within_window": within_window,
-                    "amount_paise": amount_paise,
-                    "razorpay_payment_id": razorpay_payment_id},
-    })
-    return result
+    return AttributionResult(accepted=accepted, within_window=within_window,
+                              satisfies_amount=satisfies_amount, reason=reason)
 
 
-def expire_stale_attempts(merchant_id: str) -> int:
-    """Attempts awaiting an outcome past the recovery window expire honestly."""
-    cfg = db.get_guardrail_config(merchant_id)
-    now = datetime.now(timezone.utc)
-    expired = 0
-    for attempt in db.query_all(
-        "SELECT * FROM recovery_attempts WHERE merchant_id=? AND status='awaiting_outcome'",
-        (merchant_id,),
-    ):
-        deadline = _parse(iso_plus_days(attempt["created_at"], cfg["recovery_window_days"]))
-        if now > deadline:
-            db.update_recovery_attempt(attempt["recovery_attempt_id"], status="expired",
-                                       resolved_at=db.now_iso())
-            ev = db.get_event(attempt["event_id"])
-            if ev and ev["status"] == "waiting_for_outcome":
-                transition(ev["event_id"], EventStatus.expired)
-                db.insert_audit({
-                    "event_id": ev["event_id"], "merchant_id": merchant_id,
-                    "stage": AuditStage.outcome.value,
-                    "message": "Recovery window elapsed with no successful payment — expired.",
-                    "payload": {},
-                })
-            expired += 1
-    return expired
+def mark_expired(event_id: str, reason: str) -> None:
+    """The event aged out of its recovery window without a confirmed
+    payment — a distinct terminal outcome from `recovered`, never silently
+    reclassified as either."""
+    db.update_event(event_id, status=EventStatus.expired.value)
+
+
+def mark_attempt_failed(recovery_attempt_id: str, reason: str) -> None:
+    db.update_recovery_attempt(recovery_attempt_id, status="failed",
+                                resolved_at=datetime.now(timezone.utc).isoformat())

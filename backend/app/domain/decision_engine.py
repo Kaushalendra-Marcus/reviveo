@@ -1,9 +1,14 @@
-"""Deterministic decision engine (doc §3.8 / §3.9).
+"""Deterministic decision policy — the single source of truth for which
+action a cause is allowed to produce, and at what confidence/risk it may
+auto-execute (doc §3.8, §3.9).
 
-The LLM may only choose among the actions whitelisted here; known causes,
-confidence thresholds, risk tiers and escalation rules are fully
-deterministic. `decide()` is pure apart from reading no I/O at all — every
-input is passed in — so it is trivially unit-testable per rule-table row.
+This module is the enforcement point for the "agent proposes, policy
+decides" boundary (doc C4/§3.8): whether the caller is the synchronous
+deterministic pipeline or the agentic tool-use loop, every proposed action
+passes through `decide()`. The LLM never invents an action, changes a
+threshold, or bypasses this whitelist — it can only choose among actions this
+module already allows for the classified cause, and the confidence/approval
+outcome is always recomputed here, never trusted from the model.
 """
 from __future__ import annotations
 
@@ -11,179 +16,199 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..enums import Action, Cause, EventType, ExecutionMechanism, RiskTier
-from .subscription_lifecycle import resolve_subscription_action
+from . import subscription_lifecycle
 
-POLICY_VERSION = "reviveo-policy-1.0"
+POLICY_VERSION = "policy-v1"
 
-# Hard whitelist (doc §3.9). Unknown/unclassified causes permit ONLY escalation.
+# Hard whitelist (doc §3.9). Unclassified causes may only escalate.
 ALLOWED_ACTIONS_BY_CAUSE: dict[Cause, tuple[Action, ...]] = {
-    Cause.card_expired: (
-        Action.send_payment_update_link,
-        Action.smart_retry_24h,
-        Action.send_reminder,
-    ),
-    Cause.insufficient_funds: (
-        Action.smart_retry_24h,
-        Action.retry_and_notify,
-        Action.send_reminder,
-    ),
-    Cause.payment_timeout: (
-        Action.immediate_retry,
-        Action.retry_and_notify,
-        Action.send_reminder,
-    ),
-    Cause.bank_declined: (
-        Action.smart_retry_24h,
-        Action.send_reminder,
-    ),
-    Cause.checkout_abandoned: (Action.send_reminder,),
-    Cause.unclassified: (),
+    Cause.card_expired: (Action.send_payment_update_link, Action.escalate_to_human),
+    Cause.insufficient_funds: (Action.smart_retry_24h, Action.send_reminder, Action.escalate_to_human),
+    Cause.payment_timeout: (Action.immediate_retry, Action.escalate_to_human),
+    Cause.bank_declined: (Action.retry_and_notify, Action.send_payment_update_link, Action.escalate_to_human),
+    Cause.checkout_abandoned: (Action.send_reminder, Action.escalate_to_human),
+    Cause.unclassified: (Action.escalate_to_human,),
 }
 
-ESCALATION_FALLBACK = Action.escalate_to_human
-
-# Explicit risk tiers (doc §3.9): low → send_reminder/smart_retry_24h,
-# medium → retry_and_notify/immediate_retry/send_payment_update_link,
-# safe → escalate_to_human.
+# Explicit risk tiers (doc §3.9).
 ACTION_RISK: dict[Action, RiskTier] = {
     Action.send_reminder: RiskTier.low,
     Action.smart_retry_24h: RiskTier.low,
-    Action.monitor_native_retry: RiskTier.low,
     Action.retry_and_notify: RiskTier.medium,
     Action.immediate_retry: RiskTier.medium,
     Action.send_payment_update_link: RiskTier.medium,
+    Action.monitor_native_retry: RiskTier.low,
     Action.escalate_to_human: RiskTier.safe,
 }
 
-# How confident classification itself is, per cause (feeds §3.9 bands).
-CAUSE_CONFIDENCE: dict[Cause, float] = {
-    Cause.card_expired: 0.92,
-    Cause.payment_timeout: 0.88,
-    Cause.checkout_abandoned: 0.90,
-    Cause.insufficient_funds: 0.82,
-    Cause.bank_declined: 0.78,
-    Cause.unclassified: 0.30,
-}
-
-# Internal mechanism vocabulary (doc §3.4) — what Razorpay actually does.
-ACTION_MECHANISM: dict[Action, Optional[ExecutionMechanism]] = {
+# Default internal execution mechanism per action (doc §3.4) when no
+# subscription-lifecycle override and no one-time/subscription context
+# distinction applies. `select_execution_mechanism` refines this.
+_DEFAULT_MECHANISM_BY_ACTION: dict[Action, Optional[ExecutionMechanism]] = {
     Action.send_reminder: ExecutionMechanism.reminder_only,
     Action.smart_retry_24h: ExecutionMechanism.scheduled_recovery_payment,
     Action.immediate_retry: ExecutionMechanism.new_recovery_payment,
     Action.retry_and_notify: ExecutionMechanism.new_recovery_payment,
-    Action.send_payment_update_link: ExecutionMechanism.checkout,
+    Action.send_payment_update_link: ExecutionMechanism.payment_link,
     Action.monitor_native_retry: ExecutionMechanism.native_subscription_retry,
     Action.escalate_to_human: None,
+}
+
+# Deterministic baseline confidence per cause, used when no AI reasoning is
+# requested (doc: batch runs default use_ai=False) and as the starting point
+# the agent's own confidence is sanity-checked against. Reflects how
+# reliably each cause bucket is fixed by its default action in practice —
+# an explicit, explainable heuristic, not a black box.
+_BASE_CONFIDENCE_BY_CAUSE: dict[Cause, float] = {
+    Cause.payment_timeout: 0.90,     # transient — retrying now is very likely to work
+    Cause.insufficient_funds: 0.80,  # waiting/reminding is a well-understood fix
+    Cause.checkout_abandoned: 0.75,  # a reminder recovers a meaningful share
+    Cause.card_expired: 0.65,        # needs the customer to act; less certain
+    Cause.bank_declined: 0.55,       # broad bucket, many possible sub-causes
+    Cause.unclassified: 0.20,        # always escalate
 }
 
 
 @dataclass(frozen=True)
 class Decision:
     action: Action
-    mechanism: Optional[ExecutionMechanism]
+    execution_mechanism: Optional[ExecutionMechanism]
     confidence: float
     risk_tier: RiskTier
     requires_approval: bool
     reasoning: str
-    cause: Cause
-    policy_version: str = POLICY_VERSION
+    blocked_invalid_proposal: bool = False
 
 
-def confidence_band(confidence: float, *, low: float, high: float) -> str:
-    """§3.9: ≥high → auto-execute if guardrails pass; [low, high) → only
-    low-risk actions auto-execute; <low → escalation only."""
-    if confidence >= high:
-        return "high"
-    if confidence >= low:
-        return "medium"
-    return "low"
+def select_execution_mechanism(
+    action: Action, subscription_state: Optional[str]
+) -> Optional[ExecutionMechanism]:
+    """`send_payment_update_link` uses the subscription card-change flow
+    (Checkout) in a subscription context, and a Payment Link for a one-time
+    obligation (doc §3.3 final action matrix)."""
+    if action == Action.send_payment_update_link and subscription_state not in (None, "none"):
+        return ExecutionMechanism.checkout
+    return _DEFAULT_MECHANISM_BY_ACTION.get(action)
 
 
-def select_action(cause: Cause, attempts_count: int) -> Action:
-    """Deterministic pick from the whitelist; progresses across attempts."""
-    if cause is Cause.unclassified:
-        return ESCALATION_FALLBACK
-    allowed = ALLOWED_ACTIONS_BY_CAUSE.get(cause, ())
-    if not allowed:
-        return ESCALATION_FALLBACK
-    if attempts_count == 0:
-        return allowed[0]
-    if len(allowed) > 1 and attempts_count == 1:
-        return allowed[1]
-    if Action.send_reminder in allowed:
-        return Action.send_reminder
-    return ESCALATION_FALLBACK
+def compute_confidence(cause: Cause, customer: Optional[dict], attempt_count: int) -> float:
+    """Deterministic confidence heuristic (doc: "Confidence level, Customer
+    history, ... Previous recovery attempts" are inputs to the decision).
+
+    Starts from the cause's base rate, then adjusts for customer history and
+    how many attempts have already been made on this event — repeated
+    failures on the same event should reduce confidence, not stay flat.
+    """
+    confidence = _BASE_CONFIDENCE_BY_CAUSE.get(cause, 0.20)
+
+    if customer:
+        if (customer.get("total_recovered_paise") or 0) > 0:
+            confidence += 0.05  # has paid successfully before — likely a real customer hitting friction
+        if (customer.get("failed_payment_count") or 0) >= 3:
+            confidence -= 0.15  # chronic failures — lower trust in an automated fix
+
+    if attempt_count >= 2:
+        confidence -= 0.10 * (attempt_count - 1)  # each repeat failure erodes confidence further
+
+    return max(0.0, min(1.0, round(confidence, 4)))
+
+
+def choose_action(
+    *, cause: Cause, event_type: EventType | str, subscription_state: Optional[str]
+) -> tuple[Action, Optional[ExecutionMechanism], str, Optional[float]]:
+    """Deterministic default action for a cause+context — the policy's own
+    pick, used directly by the non-AI pipeline and as the ground truth an
+    agent-proposed action is validated against. The fourth element is a
+    confidence override (set only when a lifecycle rule is a well-understood
+    platform fact rather than a probabilistic guess) — None otherwise."""
+    allowed = ALLOWED_ACTIONS_BY_CAUSE.get(cause, (Action.escalate_to_human,))
+    base_action = allowed[0]
+
+    override = subscription_lifecycle.resolve_subscription_action(
+        event_type=event_type, subscription_state=subscription_state,
+        cause=cause, base_action=base_action,
+    )
+    if override:
+        return override.action, override.mechanism, override.note, override.confidence
+
+    mechanism = select_execution_mechanism(base_action, subscription_state)
+    reasoning = f"Cause classified as {cause.value}; default policy action is {base_action.value}."
+    return base_action, mechanism, reasoning, None
+
+
+def _requires_approval(confidence: float, risk: RiskTier, high_conf: float, low_conf: float) -> bool:
+    if confidence >= high_conf:
+        return False  # high confidence — auto-execute if guardrails pass
+    if confidence < low_conf:
+        return False  # always escalated instead (handled by caller), not a normal "approval"
+    # medium confidence: only low-risk actions may auto-execute
+    return risk != RiskTier.low
 
 
 def decide(
     *,
+    cause: Cause,
     event_type: EventType | str,
     subscription_state: Optional[str],
-    cause: Cause,
-    attempts_count: int,
-    low_confidence: float,
+    customer: Optional[dict],
+    attempt_count: int,
     high_confidence: float,
+    low_confidence: float,
+    requested_action: Optional[Action] = None,
 ) -> Decision:
-    event_type = EventType(event_type)
-    base_action = select_action(cause, attempts_count)
-    confidence = CAUSE_CONFIDENCE[cause]
+    """The single deterministic authority for action selection (doc §3.8).
 
-    override = resolve_subscription_action(
-        event_type=event_type,
-        subscription_state=subscription_state,
-        cause=cause,
-        base_action=base_action,
+    `requested_action` is what an AI agent is proposing (via the
+    `check_guardrails`/decision tool). If it isn't in the whitelist for this
+    cause, the proposal is rejected outright and replaced with
+    `escalate_to_human` — the model cannot invent an action.
+    """
+    default_action, default_mechanism, default_reasoning, confidence_override = choose_action(
+        cause=cause, event_type=event_type, subscription_state=subscription_state,
     )
-    note = ""
-    if override is not None:
-        action, mechanism = override.action, override.mechanism
-        confidence = override.confidence if override.confidence is not None else confidence
-        note = override.note
+
+    allowed = ALLOWED_ACTIONS_BY_CAUSE.get(cause, (Action.escalate_to_human,))
+    blocked_invalid = False
+    if requested_action is not None:
+        if requested_action in allowed:
+            action = requested_action
+            mechanism = select_execution_mechanism(action, subscription_state)
+            reasoning = f"Agent-selected action {action.value} for cause {cause.value} (within policy whitelist)."
+            confidence_override = None  # an agent-proposed action isn't the well-understood lifecycle rule
+        else:
+            action, mechanism, reasoning = Action.escalate_to_human, None, (
+                f"Agent proposed '{requested_action.value}' which is not permitted for cause "
+                f"'{cause.value}'; escalating to a human instead."
+            )
+            blocked_invalid = True
+            confidence_override = None
     else:
-        action, mechanism = base_action, ACTION_MECHANISM[base_action]
+        action, mechanism, reasoning = default_action, default_mechanism, default_reasoning
 
-    band = confidence_band(confidence, low=low_confidence, high=high_confidence)
-    risk = ACTION_RISK[action]
-
-    # §3.9 medium-confidence rule: only low-risk actions may auto-execute.
-    requires_approval = band == "medium" and risk is not RiskTier.low
-
-    if band == "low" and action is not ESCALATION_FALLBACK:
-        action, mechanism = ESCALATION_FALLBACK, None
-        risk = RiskTier.safe
-        requires_approval = False
-        note = (note + " " if note else "") + (
-            f"Cause confidence {confidence:.2f} below threshold {low_confidence:.2f} "
-            "— escalating to a human instead of acting."
-        )
-
-    reasoning = (
-        f"Cause '{cause.value}' classified with confidence {confidence:.2f} ({band} band); "
-        f"selected '{action.value}' (risk={risk.value})."
+    confidence = (
+        confidence_override if confidence_override is not None
+        else compute_confidence(cause, customer, attempt_count)
     )
-    if note:
-        reasoning += f" {note}"
+
+    # Low confidence always escalates, regardless of which action was chosen
+    # (doc §3.9: "<0.50 low → escalation only").
+    if confidence < low_confidence and action != Action.escalate_to_human:
+        action = Action.escalate_to_human
+        mechanism = None
+        reasoning = f"Confidence {confidence:.2f} is below the low-confidence threshold — escalating rather than acting automatically."
+
+    risk = ACTION_RISK[action]
+    needs_approval = (
+        False if action == Action.escalate_to_human
+        else _requires_approval(confidence, risk, high_confidence, low_confidence)
+    )
 
     return Decision(
         action=action,
-        mechanism=mechanism,
-        confidence=round(confidence, 4),
+        execution_mechanism=mechanism,
+        confidence=confidence,
         risk_tier=risk,
-        requires_approval=requires_approval,
+        requires_approval=needs_approval,
         reasoning=reasoning,
-        cause=cause,
+        blocked_invalid_proposal=blocked_invalid,
     )
-
-
-def as_decision_dict(d: Decision, *, ai_used: bool = False) -> dict:
-    return {
-        "action": d.action.value,
-        "mechanism": d.mechanism.value if d.mechanism else None,
-        "confidence": d.confidence,
-        "risk_tier": d.risk_tier.value,
-        "requires_approval": d.requires_approval,
-        "reasoning": d.reasoning,
-        "cause": d.cause.value,
-        "policy_version": d.policy_version,
-        "ai_used": ai_used,
-    }

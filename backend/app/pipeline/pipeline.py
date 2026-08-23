@@ -1,248 +1,304 @@
-"""Per-event recovery pipeline (doc C5, §3.17).
+"""The deterministic recovery pipeline (doc A0 `pipeline.py`; final flow
+doc §3.17). `process_event()` is the single entrypoint both the webhook
+handler and the synthetic batch runner call — it always writes exactly the
+same 6-stage audit trail (doc C5: detected/analyzed/decided/guardrail/
+executed/outcome) regardless of which branch the event takes, so the audit
+trail is uniform and testable (doc A6).
 
-Deterministic path: ingest → analyze → decide → guard → execute/escalate →
-outcome/attribution. The agentic layer (Part C) replaces steps 2–4 with a
-tool-calling loop when `use_ai=True`; every AI-touched audit row records
-ai_used/model/latency/fallback so the fallback story stays provable (C7).
+When `use_ai=True`, stages 2-5 are delegated to the agentic tool-use loop
+(`services.agent_service`) instead of being called directly here — but every
+tool the agent can call is the exact same guarded Python function used in
+the deterministic path, so the safety guarantees (doc C4/§3.8) are identical
+either way.
 """
 from __future__ import annotations
 
-import time
-import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from .. import db
-from ..agent import ai_service, loop as agent_loop
 from ..config import settings
-from ..domain.cause_analysis import classify_cause
-from ..domain.decision_engine import POLICY_VERSION, as_decision_dict, decide
-from ..enums import Action, AuditStage, Cause, EventStatus
+from ..domain import cause_analysis, decision_engine, guardrails
+from ..enums import Action, AuditStage, Cause, EventStatus, ExecutionMechanism
 from ..logging_config import get_logger
-from ..services import approvals as approvals_service
-from . import attribution, executor
-from .state_machine import is_terminal, transition
+from ..services import ai_service, execution_service
+from . import attribution
 
 logger = get_logger("reviveo.pipeline")
 
+AuditFn = Callable[..., None]
 
-# ── ingestion ────────────────────────────────────────────────────────────────
-def ingest_event(payload: dict) -> dict:
-    """Persist a new event at status=detected + the first audit stage."""
-    merchant_id = payload.get("merchant_id") or settings.default_merchant_id
-    event_id = payload.get("event_id") or f"evt_{uuid.uuid4().hex[:12]}"
-    sub_state = None
-    if payload.get("subscription_id"):
-        sub = db.get_subscription(payload["subscription_id"])
-        sub_state = sub["state"] if sub else None
 
-    event = {
-        "event_id": event_id,
-        "merchant_id": merchant_id,
-        "customer_id": payload.get("customer_id"),
-        "subscription_id": payload.get("subscription_id"),
-        "invoice_id": payload.get("invoice_id"),
-        "type": payload["type"],
-        "error_code": payload.get("error_code"),
-        "amount_paise": int(payload.get("amount_paise", 0)),
-        "status": EventStatus.detected.value,
-        "subscription_state_before": payload.get("subscription_state_before", sub_state),
-        "origin": payload.get("origin", "synthetic"),
-        "razorpay_payment_id": payload.get("razorpay_payment_id"),
-    }
-    db.insert_event(event)
-    if event["customer_id"]:
-        db.incr_customer_failed_count(merchant_id, event["customer_id"])
+def _audit(*, event_id: str, merchant_id: str, stage: AuditStage, message: str,
+           payload: Optional[dict] = None, ai_used: bool = False, ai_model: Optional[str] = None,
+           ai_latency_ms: Optional[int] = None, fallback_triggered: bool = False) -> None:
     db.insert_audit({
-        "event_id": event_id, "merchant_id": merchant_id,
-        "stage": AuditStage.detected.value,
-        "message": f"Detected {event['type']} of ₹{event['amount_paise'] / 100:.2f}"
-                   + (f" (subscription {event['subscription_state_before']})"
-                      if event["subscription_state_before"] else ""),
-        "payload": {"source": event["origin"], "razorpay_payment_id": event["razorpay_payment_id"]},
+        "event_id": event_id, "merchant_id": merchant_id, "stage": stage.value,
+        "message": message, "payload": payload or {}, "ai_used": ai_used,
+        "ai_model": ai_model, "ai_latency_ms": ai_latency_ms,
+        "fallback_triggered": fallback_triggered,
     })
-    return db.get_event(event_id)  # type: ignore[return-value]
 
 
-# ── decision + guard + execution ─────────────────────────────────────────────
-def process_event(event_id: str, *, use_ai: bool = False) -> dict:
-    ev = db.get_event(event_id)
-    if ev is None:
-        raise KeyError(f"Unknown event '{event_id}'")
-    if is_terminal(ev):
-        return {"event_id": event_id, "skipped": f"terminal ({ev['status']})"}
-
-    merchant_id = ev["merchant_id"]
+def process_event(event: dict, *, use_ai: bool = False) -> dict:
+    """Runs the full pipeline for an already-persisted event (status must
+    already be 'detected' — the caller is responsible for `db.insert_event`).
+    Returns a small summary dict describing where the event ended up.
+    """
+    event_id = event["event_id"]
+    merchant_id = event["merchant_id"]
     cfg = db.get_guardrail_config(merchant_id)
-    ai_meta: dict = {"ai_used": False, "fallback_triggered": False}
 
-    # 1. analyze — deterministic cause classification.
-    transition(event_id, EventStatus.analyzing)
-    cause = classify_cause(ev.get("error_code"))
-    ai_note = ""
-    if cause is Cause.unclassified:
-        # Advisory-only AI classification (doc C6); the low-confidence rule
-        # still gates the action no matter what it returns.
-        suggestion = ai_service.classify_unknown_cause(
-            ev.get("error_code") or "", ev.get("error_code") or "")
-        if suggestion is None:
-            ai_meta["fallback_triggered"] = bool(use_ai and settings.ai_configured)
-        else:
-            label, latency = suggestion
-            ai_meta.update({"ai_used": True, "ai_model": settings.ai_model_fast,
-                            "ai_latency_ms": latency})
-            ai_note = f"AI suggests '{label}' but confidence gating still applies; "
-    db.update_event(event_id, cause=cause.value)
-    db.insert_audit({
-        "event_id": event_id, "merchant_id": merchant_id,
-        "stage": AuditStage.analyzed.value,
-        "message": f"{ai_note}Cause classified as '{cause.value}' from error signal "
-                   f"'{ev.get('error_code')}'.",
-        "payload": {"cause": cause.value, "error_code": ev.get("error_code")},
-        **_ai_fields(ai_meta),
-    })
+    # ── Stage 1: detected ───────────────────────────────────────────────────
+    _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.detected,
+           message=f"Event detected: {event['type']}",
+           payload={"type": event["type"], "amount_paise": event["amount_paise"],
+                     "origin": event.get("origin")})
 
-    attempts_used = db.count_attempts(event_id)
-    current_sub_state = None
-    if ev.get("subscription_id"):
-        sub = db.get_subscription(ev["subscription_id"])
-        current_sub_state = sub["state"] if sub else None
-
-    started = time.monotonic()
-    decision: Optional[dict] = None
-
-    # 2. decide — agent tool-loop first when enabled, deterministic otherwise.
     if use_ai:
-        agent_result = agent_loop.run_agent(db.get_event(event_id), cfg=cfg)
-        if agent_result is not None:
-            decision = agent_result["decision"]
-            ai_meta.update(agent_result["meta"])
-        else:
-            ai_meta["fallback_triggered"] = True
-    if decision is None:
-        d = decide(
-            event_type=ev["type"],
-            subscription_state=current_sub_state,
-            cause=cause,
-            attempts_count=attempts_used,
-            low_confidence=cfg["low_confidence"],
-            high_confidence=cfg["high_confidence"],
-        )
-        decision = as_decision_dict(d)
+        from ..services import agent_service
+        return agent_service.run_agent_for_event(event=event, cfg=cfg, audit=_audit)
 
-    reasoning_text = decision["reasoning"]
-    if settings.ai_configured:
-        phrased = ai_service.generate_reasoning_text({
-            "cause": cause.value, "action": decision["action"],
-            "confidence": decision["confidence"], "amount_rupees": ev["amount_paise"] / 100,
-        })
-        if phrased is not None:
-            text, latency = phrased
-            reasoning_text = text
-            ai_meta.update({"ai_used": True, "ai_model": settings.ai_model_fast,
-                            "ai_latency_ms": latency})
-        elif use_ai:
-            ai_meta["fallback_triggered"] = True
-    decision["reasoning"] = reasoning_text
+    return _process_event_deterministic(event, cfg)
 
-    decision_expires_at = (
-        datetime.now(timezone.utc) + timedelta(hours=settings.decision_ttl_hours)
-    ).isoformat()
+
+def _process_event_deterministic(event: dict, cfg: dict) -> dict:
+    event_id = event["event_id"]
+    merchant_id = event["merchant_id"]
+
+    # ── Stage 2: analyzed ────────────────────────────────────────────────────
+    cause = cause_analysis.classify_cause(event.get("error_code"), event.get("error_description"))
+    ai_used_for_cause = False
+    fallback_used = False
+    if cause == Cause.unclassified and event.get("error_code"):
+        # AI enrichment only (doc C6) — never changes the deterministic
+        # policy path; `cause` stays `unclassified` regardless of what
+        # comes back, so the low-confidence auto-escalate rule always holds.
+        ai_result = ai_service.classify_unknown_cause(
+            error_code=event.get("error_code"), error_description=event.get("error_description"))
+        ai_used_for_cause = ai_result.used
+        fallback_used = ai_result.fallback_triggered
+
+    customer = db.get_customer(merchant_id, event["customer_id"]) if event.get("customer_id") else None
+    subscription = db.get_subscription(event["subscription_id"]) if event.get("subscription_id") else None
+    sub_state_before = subscription["state"] if subscription else None
+
+    db.update_event(event_id, cause=cause.value, status=EventStatus.analyzing.value,
+                     subscription_state_before=sub_state_before)
+    _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.analyzed,
+           message=f"Classified cause: {cause.value}",
+           payload={"cause": cause.value, "customer_id": event.get("customer_id"),
+                     "subscription_state": sub_state_before},
+           ai_used=ai_used_for_cause, fallback_triggered=fallback_used)
+
+    # ── Stage 3: decided ─────────────────────────────────────────────────────
+    attempt_count = db.count_attempts(event_id)
+    decision = decision_engine.decide(
+        cause=cause, event_type=event["type"], subscription_state=sub_state_before,
+        customer=customer, attempt_count=attempt_count,
+        high_confidence=cfg["high_confidence"], low_confidence=cfg["low_confidence"],
+    )
+    reasoning_result = ai_service.generate_reasoning_text(
+        cause=cause.value, action=decision.action.value, confidence=decision.confidence,
+        fallback=decision.reasoning,
+    )
+    decision_expires_at = (datetime.now(timezone.utc) + timedelta(hours=settings.decision_ttl_hours)).isoformat()
     db.insert_decision({
-        "event_id": event_id, "merchant_id": merchant_id,
-        **{k: decision[k] for k in
-           ("action", "mechanism", "confidence", "risk_tier", "requires_approval",
-            "reasoning", "policy_version")},
-        "ai_used": ai_meta["ai_used"],
+        "event_id": event_id, "merchant_id": merchant_id, "action": decision.action.value,
+        "execution_mechanism": decision.execution_mechanism.value if decision.execution_mechanism else None,
+        "confidence": decision.confidence, "risk_tier": decision.risk_tier.value,
+        "requires_approval": decision.requires_approval, "reasoning": reasoning_result.text,
+        "ai_used": reasoning_result.used, "policy_version": decision_engine.POLICY_VERSION,
         "decision_expires_at": decision_expires_at,
     })
-    db.update_event(event_id, decision_expires_at=decision_expires_at)
-    transition(event_id, EventStatus.action_selected)
-    db.insert_audit({
-        "event_id": event_id, "merchant_id": merchant_id,
-        "stage": AuditStage.decided.value,
-        "message": reasoning_text,
-        "payload": {"action": decision["action"], "mechanism": decision["mechanism"],
-                    "confidence": decision["confidence"],
-                    "risk_tier": decision["risk_tier"],
-                    "requires_approval": decision["requires_approval"],
-                    "policy_version": decision["policy_version"],
-                    "agent_latency_ms": int((time.monotonic() - started) * 1000)},
-        **_ai_fields(ai_meta),
-    })
+    db.update_event(event_id, status=EventStatus.action_selected.value)
+    _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.decided,
+           message=f"Selected action: {decision.action.value}",
+           payload={"action": decision.action.value, "confidence": decision.confidence,
+                     "risk_tier": decision.risk_tier.value, "reasoning": reasoning_result.text},
+           ai_used=reasoning_result.used, ai_model=reasoning_result.model,
+           ai_latency_ms=reasoning_result.latency_ms,
+           fallback_triggered=reasoning_result.fallback_triggered)
 
-    # 3. guard — enforcement lives here, not in any model's judgment (C4).
-    from ..guardrails.guardrails import evaluate
-
-    amount = ev["amount_paise"]
-    guard = evaluate(merchant_id, db.get_event(event_id), decision["action"], amount, cfg=cfg)
-    db.insert_audit({
-        "event_id": event_id, "merchant_id": merchant_id,
-        "stage": AuditStage.guardrail.value,
-        "message": ("All guardrails passed." if guard.passed
-                    else f"Blocked: {'; '.join(guard.blocked_reasons)}.")
-                   + (" Approval required by policy." if guard.requires_approval else ""),
-        "payload": guard.as_payload(),
-    })
-
-    final_action = Action(decision["action"])
-    if not guard.passed and final_action is not Action.escalate_to_human:
-        decision = {
-            **decision,
-            "action": Action.escalate_to_human.value,
-            "mechanism": None,
-            "risk_tier": "safe",
-            "requires_approval": False,
-            "reasoning": decision["reasoning"]
-                         + " Guardrails blocked execution — escalating to a human instead.",
-        }
-        final_action = Action.escalate_to_human
-
-    # 4. approval gate or 5. execution.
-    if final_action is Action.escalate_to_human or guard.requires_approval \
-            or decision.get("requires_approval"):
-        reason = ("guardrail policy requires review"
-                  if guard.requires_approval or decision.get("requires_approval")
-                  else "; ".join(guard.blocked_reasons))
-        approval_id = approvals_service.enqueue(merchant_id, db.get_event(event_id),
-                                                decision, reason=reason)
-        transition(event_id, EventStatus.approval_pending)
-        return {"event_id": event_id, "approval_id": approval_id,
-                "status": EventStatus.approval_pending.value}
-
-    result = executor.execute_decision(
-        db.get_event(event_id), decision,
-        scheduled_for=None,  # smart_retry_24h schedules itself inside executor
+    # ── Stage 4: guardrail ───────────────────────────────────────────────────
+    last_attempt_at = db.last_attempt_time(event_id)
+    g = guardrails.check_guardrails(
+        merchant_id=merchant_id, cfg=cfg, action=decision.action,
+        amount_paise=event["amount_paise"], attempt_count=attempt_count,
+        last_attempt_at=last_attempt_at, event_created_at=event["created_at"],
     )
-    refreshed = db.get_event(event_id)
+    _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.guardrail,
+           message="Guardrails blocked this action" if g.blocked else "Guardrails passed",
+           payload={"blocked": g.blocked, "code": g.code, "reason": g.reason,
+                     "requires_approval": g.requires_approval})
 
-    # Synthetic dry-runs resolve immediately so demos show the full chain;
-    # live executions wait for the real Razorpay outcome webhook.
-    # Synthetic dry-runs resolve immediately so demos show the full chain;
-    # live-origin executions always wait for the real Razorpay outcome
-    # webhook (§3.14 — synthetic vs live_test_mode stay separate).
-    attempt = result["attempt"]
-    if (attempt["status"] == "awaiting_outcome"
-            and attempt["execution_mode"] == "dry_run"
-            and refreshed["origin"] == "synthetic"):
-        stored = db.get_recovery_attempt(attempt["recovery_attempt_id"])
-        sim = attribution.simulate_outcome(stored)
-        attribution.apply_outcome(refreshed, stored, **sim)
-        refreshed = db.get_event(event_id)
+    needs_approval = (
+        decision.action == Action.escalate_to_human
+        or decision.requires_approval
+        or g.requires_approval
+        or (g.blocked and g.code not in ("recovery_window_expired", "cooldown_active"))
+    )
 
-    return {"event_id": event_id, "status": refreshed["status"],
-            "attempt": attempt, "scheduled": result["scheduled"]}
+    # ── Stage 5 & 6: executed / outcome ──────────────────────────────────────
+    if g.blocked and g.code == "recovery_window_expired":
+        attribution.mark_expired(event_id, g.reason or "recovery window expired")
+        _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.executed,
+               message="Skipped — recovery window expired", payload={"skipped": True})
+        _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.outcome,
+               message="Event expired", payload={"status": EventStatus.expired.value})
+        return {"event_id": event_id, "status": EventStatus.expired.value, "action": decision.action.value}
+
+    if g.blocked and g.code == "cooldown_active":
+        # Not a failure — reschedule the same action for when the cooldown
+        # lifts instead of escalating to a human unnecessarily.
+        db.update_event(event_id, status=EventStatus.scheduled.value)
+        _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.executed,
+               message="Scheduled — cooldown active", payload={"scheduled_for": g.retry_after})
+        _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.outcome,
+               message="Awaiting cooldown before retrying", payload={"status": "pending"})
+        return {"event_id": event_id, "status": EventStatus.scheduled.value, "action": decision.action.value}
+
+    if needs_approval:
+        ai_summary = ai_service.summarize_for_approval(
+            event=event, decision={"action": decision.action.value, "confidence": decision.confidence},
+            guardrail_reason=g.reason, fallback=decision.reasoning,
+        )
+        approval_id = db.insert_approval({
+            "merchant_id": merchant_id, "event_id": event_id,
+            "proposed_action": decision.action.value,
+            "execution_mechanism": decision.execution_mechanism.value if decision.execution_mechanism else None,
+            "amount_paise": event["amount_paise"], "reason": g.reason or decision.reasoning,
+            "ai_summary": ai_summary.text,
+        })
+        db.update_event(event_id, status=EventStatus.approval_pending.value)
+        _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.executed,
+               message="Routed to approval queue", payload={"approval_id": approval_id},
+               ai_used=ai_summary.used, ai_model=ai_summary.model,
+               ai_latency_ms=ai_summary.latency_ms, fallback_triggered=ai_summary.fallback_triggered)
+        _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.outcome,
+               message="Pending human approval", payload={"status": "pending", "approval_id": approval_id})
+        return {"event_id": event_id, "status": EventStatus.approval_pending.value, "action": decision.action.value}
+
+    # Auto-execute path (high confidence, or medium-confidence low-risk).
+    result = execution_service.execute_action(
+        merchant_id=merchant_id, event=event, action=decision.action,
+        mechanism=decision.execution_mechanism or ExecutionMechanism.reminder_only,
+        customer=customer,
+    )
+    new_status = EventStatus.scheduled.value if result.status == "scheduled" else EventStatus.waiting_for_outcome.value
+    db.update_event(event_id, status=new_status)
+    _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.executed,
+           message=f"Executed via {result.execution_mechanism}",
+           payload={"recovery_attempt_id": result.recovery_attempt_id,
+                     "execution_mode": result.execution_mode, "razorpay_ref": result.razorpay_ref})
+    _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.outcome,
+           message="Awaiting payment outcome",
+           payload={"status": "pending", "recovery_attempt_id": result.recovery_attempt_id})
+    return {"event_id": event_id, "status": new_status, "action": decision.action.value,
+            "recovery_attempt_id": result.recovery_attempt_id}
 
 
-def _ai_fields(meta: dict) -> dict:
+_RESOLVED_STATUSES = {
+    EventStatus.recovered.value, EventStatus.expired.value, EventStatus.closed.value,
+    EventStatus.escalated.value, EventStatus.failed.value,
+}
+
+
+def revalidate_and_execute_scheduled(attempt: dict) -> None:
+    """Before any scheduled action executes: revalidate event status,
+    recovery state, recovery window, cooldown, retry count, and every
+    guardrail — this re-enters the exact same policy + execution path,
+    never a shortcut (doc §3.11).
+    """
+    event = db.get_event(attempt["event_id"])
+    if event is None or event["status"] in _RESOLVED_STATUSES:
+        # Already resolved via another path (e.g. an outcome webhook arrived
+        # first) — a stale scheduled attempt must not act on it.
+        db.update_recovery_attempt(attempt["recovery_attempt_id"], status="expired")
+        return
+
+    merchant_id = event["merchant_id"]
+    cfg = db.get_guardrail_config(merchant_id)
+    customer = db.get_customer(merchant_id, event["customer_id"]) if event.get("customer_id") else None
+    action = Action(attempt["action"])
+
+    # This scheduled attempt already has its own row in recovery_attempts;
+    # subtract 1 so the count matches what it was at the moment the action
+    # was originally scheduled (consistent with how it was first checked).
+    prior_attempt_count = max(0, db.count_attempts(event["event_id"]) - 1)
+
+    g = guardrails.check_guardrails(
+        merchant_id=merchant_id, cfg=cfg, action=action, amount_paise=attempt["amount_paise"],
+        attempt_count=prior_attempt_count, last_attempt_at=None,
+        event_created_at=event["created_at"],
+    )
+    _audit(event_id=event["event_id"], merchant_id=merchant_id, stage=AuditStage.guardrail,
+           message="Revalidated scheduled action" + (" — blocked" if g.blocked else " — passed"),
+           payload={"blocked": g.blocked, "code": g.code, "reason": g.reason})
+
+    if g.blocked and g.code == "recovery_window_expired":
+        attribution.mark_expired(event["event_id"], g.reason or "expired")
+        db.update_recovery_attempt(attempt["recovery_attempt_id"], status="expired")
+        _audit(event_id=event["event_id"], merchant_id=merchant_id, stage=AuditStage.outcome,
+               message="Event expired at scheduled execution time", payload={"status": "expired"})
+        return
+
+    if g.blocked:
+        db.update_recovery_attempt(attempt["recovery_attempt_id"], status="failed")
+        db.update_event(event["event_id"], status=EventStatus.escalated.value)
+        _audit(event_id=event["event_id"], merchant_id=merchant_id, stage=AuditStage.outcome,
+               message=f"Scheduled action blocked at execution time: {g.reason}",
+               payload={"status": "escalated"})
+        return
+
+    mechanism = ExecutionMechanism(attempt["execution_mechanism"])
+    result = execution_service.execute_action(
+        merchant_id=merchant_id, event=event, action=action, mechanism=mechanism,
+        customer=customer, immediate=True,
+    )
+    # The original scheduled row is superseded by the freshly-executed one —
+    # mark it resolved so the scheduler never picks it up again.
+    db.update_recovery_attempt(attempt["recovery_attempt_id"], status="failed",
+                                resolved_at=datetime.now(timezone.utc).isoformat())
+    db.update_event(event["event_id"], status=EventStatus.waiting_for_outcome.value)
+    _audit(event_id=event["event_id"], merchant_id=merchant_id, stage=AuditStage.executed,
+           message=f"Executed scheduled action via {result.execution_mechanism}",
+           payload={"recovery_attempt_id": result.recovery_attempt_id})
+    _audit(event_id=event["event_id"], merchant_id=merchant_id, stage=AuditStage.outcome,
+           message="Awaiting payment outcome", payload={"status": "pending"})
+
+
+def reanalyze_decision(event: dict) -> dict:
+    """Re-runs cause classification + the decision engine against the
+    event's *current* state (doc §3.13: "if a delayed action or approval is
+    stale, re-check/re-analyze before execution"). Used by the approval
+    endpoint when the stored decision has passed its `decision_expires_at`.
+    Does not execute anything — only returns a fresh action/mechanism.
+    """
+    merchant_id = event["merchant_id"]
+    cfg = db.get_guardrail_config(merchant_id)
+    cause = cause_analysis.classify_cause(event.get("error_code"), event.get("error_description"))
+    customer = db.get_customer(merchant_id, event["customer_id"]) if event.get("customer_id") else None
+    subscription = db.get_subscription(event["subscription_id"]) if event.get("subscription_id") else None
+    attempt_count = db.count_attempts(event["event_id"])
+
+    decision = decision_engine.decide(
+        cause=cause, event_type=event["type"],
+        subscription_state=subscription["state"] if subscription else None,
+        customer=customer, attempt_count=attempt_count,
+        high_confidence=cfg["high_confidence"], low_confidence=cfg["low_confidence"],
+    )
+    decision_expires_at = (datetime.now(timezone.utc) + timedelta(hours=settings.decision_ttl_hours)).isoformat()
+    db.insert_decision({
+        "event_id": event["event_id"], "merchant_id": merchant_id, "action": decision.action.value,
+        "execution_mechanism": decision.execution_mechanism.value if decision.execution_mechanism else None,
+        "confidence": decision.confidence, "risk_tier": decision.risk_tier.value,
+        "requires_approval": decision.requires_approval, "reasoning": f"[re-analyzed] {decision.reasoning}",
+        "ai_used": False, "policy_version": decision_engine.POLICY_VERSION,
+        "decision_expires_at": decision_expires_at,
+    })
     return {
-        "ai_used": int(bool(meta.get("ai_used"))),
-        "ai_model": meta.get("ai_model"),
-        "ai_latency_ms": meta.get("ai_latency_ms"),
-        "fallback_triggered": int(bool(meta.get("fallback_triggered"))),
+        "action": decision.action.value,
+        "execution_mechanism": decision.execution_mechanism.value if decision.execution_mechanism else None,
+        "confidence": decision.confidence,
     }
-
-
-def reanalyze_stale_event(event_id: str) -> dict:
-    """§3.13 — stale approvals/scheduled actions re-enter analysis."""
-    return process_event(event_id)

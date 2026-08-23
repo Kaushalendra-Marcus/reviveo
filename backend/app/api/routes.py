@@ -1,359 +1,354 @@
-"""Frontend-facing REST API (doc A1/A5). Single X-API-Key auth (A4)."""
+"""REST API for the Reviveo dashboard (doc A1). Every route is protected by
+the shared X-API-Key header (doc A4) except the Razorpay webhook, which is
+authenticated by signature instead and lives in `webhooks/webhook.py`.
+"""
 from __future__ import annotations
 
 import csv
 import io
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from .. import db
 from ..config import settings
 from ..deps import require_api_key
-from ..domain.cause_analysis import classify_cause
-from ..enums import Cause, EventStatus, EventType
-from ..logging_config import get_logger
+from ..enums import EventStatus
+from . import schemas
 
-logger = get_logger("reviveo.api")
-
-router = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
-
-_MERCHANT = settings.default_merchant_id  # single default merchant (§3.15)
-
-_RANGES = {"24h": timedelta(hours=24), "7d": timedelta(days=7),
-           "30d": timedelta(days=30), "all": None}
-
-_KNOWN_CHANNELS = {"email", "payment_link", "sms", "whatsapp"}
+router = APIRouter(prefix="/api", tags=["api"], dependencies=[Depends(require_api_key)])
 
 
-def _since(range_key: str, previous: bool = False) -> str:
-    delta = _RANGES.get(range_key)
-    if range_key not in _RANGES:
-        raise HTTPException(400, f"range must be one of {sorted(_RANGES)}")
-    now = datetime.now(timezone.utc)
-    if delta is None:
-        return "1970-01-01T00:00:00+00:00"
-    base = now - (2 * delta if previous else delta)
-    return base.isoformat()
+def _merchant_id() -> str:
+    # Single-merchant hackathon scope (doc §3.15); every query is still
+    # merchant-scoped so this is the only place that would change to add
+    # real multi-tenant auth.
+    return settings.default_merchant_id
 
 
-# ── summary ──────────────────────────────────────────────────────────────────
-@router.get("/summary")
-def summary(range: str = Query("7d")):
-    cur = db.summary_metrics(_MERCHANT, _since(range))
-    prev = db.summary_metrics(_MERCHANT, _since(range, previous=True))
-
-    def pct(new: float, old: float) -> Optional[float]:
-        if old == 0:
-            return None
-        return round((new - old) / old * 100, 1)
-
-    recovery_rate = (cur["recovered_paise"] / cur["revenue_at_risk_paise"] * 100
-                     if cur["revenue_at_risk_paise"] else 0.0)
-    success_rate = (cur["actions_succeeded"] / cur["actions_executed"] * 100
-                    if cur["actions_executed"] else 0.0)
-    return {
-        "range": range,
-        "revenue_at_risk_paise": cur["revenue_at_risk_paise"],
-        "recovered_paise": cur["recovered_paise"],
-        "recovery_rate_pct": round(recovery_rate, 1),
-        "events_processed": cur["events_processed"],
-        "recovered_count": cur["recovered_count"],
-        "actions_executed": cur["actions_executed"],
-        "action_success_rate_pct": round(success_rate, 1),
-        "deltas_vs_previous": {
-            "revenue_at_risk_pct": pct(cur["revenue_at_risk_paise"], prev["revenue_at_risk_paise"]),
-            "recovered_paise_pct": pct(cur["recovered_paise"], prev["recovered_paise"]),
-            "events_processed_pct": pct(cur["events_processed"], prev["events_processed"]),
-        },
-    }
+def _since(range_days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=range_days)).isoformat()
 
 
-@router.get("/summary/timeseries")
-def timeseries(range: str = Query("7d"), granularity: str = Query("day")):
+# ── Summary / dashboard ───────────────────────────────────────────────────────
+@router.get("/summary", response_model=schemas.SummaryOut)
+def get_summary(range: int = Query(default=30, ge=1, le=365, alias="range")) -> schemas.SummaryOut:
+    merchant_id = _merchant_id()
+    m = db.summary_metrics(merchant_id, _since(range))
+    recovery_rate = (m["recovered_count"] / m["events_processed"]) if m["events_processed"] else 0.0
+    return schemas.SummaryOut(range_days=range, recovery_rate=round(recovery_rate, 4), **m)
+
+
+@router.get("/summary/timeseries", response_model=list[schemas.TimeseriesPoint])
+def get_timeseries(
+    range: int = Query(default=30, ge=1, le=365, alias="range"),
+    metric: str = Query(default="recovered", pattern="^(recovered|at_risk)$"),
+) -> list[schemas.TimeseriesPoint]:
+    merchant_id = _merchant_id()
     since = _since(range)
-    at_risk = db.timeseries_at_risk(_MERCHANT, since)
-    recovered = db.timeseries_recovered(_MERCHANT, since)
-    days = sorted({r["day"] for r in at_risk} | {r["day"] for r in recovered})
-    risk_by_day = {r["day"]: r for r in at_risk}
-    rec_by_day = {r["day"]: r for r in recovered}
-    return [
-        {"day": d,
-         "at_risk_paise": risk_by_day.get(d, {}).get("amount_paise", 0),
-         "recovered_paise": rec_by_day.get(d, {}).get("amount_paise", 0)}
-        for d in days
-    ]
+    rows = (db.timeseries_recovered if metric == "recovered" else db.timeseries_at_risk)(merchant_id, since)
+    return [schemas.TimeseriesPoint(**r) for r in rows]
 
 
-@router.get("/summary/strategy-breakdown")
-def strategy_breakdown(range: str = Query("7d")):
-    rows = db.strategy_breakdown(_MERCHANT, _since(range))
-    total = sum(r["attempts"] for r in rows) or 1
+@router.get("/summary/strategy-breakdown", response_model=list[schemas.StrategyBreakdownRow])
+def get_strategy_breakdown(range: int = Query(default=30, ge=1, le=365, alias="range")) -> list[schemas.StrategyBreakdownRow]:
+    merchant_id = _merchant_id()
+    rows = db.strategy_breakdown(merchant_id, _since(range))
+    out = []
     for r in rows:
-        r["share_pct"] = round(r["attempts"] / total * 100, 1)
-    return rows
+        rate = (r["recovered_count"] / r["attempts"]) if r["attempts"] else 0.0
+        out.append(schemas.StrategyBreakdownRow(
+            mechanism=r["mechanism"] or "unknown", attempts=r["attempts"],
+            recovered_paise=r["recovered_paise"], recovered_count=r["recovered_count"],
+            success_rate=round(rate, 4),
+        ))
+    return out
 
 
-# ── events ───────────────────────────────────────────────────────────────────
-def _decorate(ev: dict) -> dict:
-    decision = db.get_latest_decision(ev["event_id"])
-    ev["latest_decision"] = (
-        {k: decision[k] for k in ("action", "confidence", "risk_tier", "reasoning")}
-        if decision else None
+# ── Events ────────────────────────────────────────────────────────────────────
+def _event_to_out(row: dict) -> schemas.EventOut:
+    decision = db.get_latest_decision(row["event_id"])
+    return schemas.EventOut(
+        **{**row, "payment_recovered": bool(row["payment_recovered"]),
+           "subscription_restored": bool(row["subscription_restored"])},
+        latest_action=decision["action"] if decision else None,
+        latest_confidence=decision["confidence"] if decision else None,
+        latest_risk_tier=decision["risk_tier"] if decision else None,
     )
-    ev["attempt_count"] = db.count_attempts(ev["event_id"])
-    return ev
 
 
-@router.get("/events")
-def list_events(status: Optional[str] = None, cause: Optional[str] = None,
-                page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+@router.get("/events", response_model=schemas.PaginatedEvents)
+def list_events(
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    cause: Optional[str] = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+) -> schemas.PaginatedEvents:
+    merchant_id = _merchant_id()
     offset = (page - 1) * page_size
-    rows = db.list_events(_MERCHANT, status=status, cause=cause,
-                          limit=page_size, offset=offset)
-    total = db.count_events(_MERCHANT, status=status, cause=cause)
-    return {"page": page, "page_size": page_size, "total": total,
-            "items": [_decorate(r) for r in rows]}
+    rows = db.list_events(merchant_id, status=status_filter, cause=cause, limit=page_size, offset=offset)
+    total = db.count_events(merchant_id, status=status_filter, cause=cause)
+    return schemas.PaginatedEvents(items=[_event_to_out(r) for r in rows], total=total,
+                                    page=page, page_size=page_size)
 
 
 @router.get("/events/export")
-def export_events(format: str = Query("csv")):
-    rows = db.list_events(_MERCHANT, limit=10_000, offset=0)
+def export_events(
+    format: str = Query(default="csv", pattern="^(csv|json)$"),
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+) -> StreamingResponse:
+    merchant_id = _merchant_id()
+    rows = db.list_events(merchant_id, status=status_filter, limit=10_000, offset=0)
     if format == "json":
-        return {"items": rows}
+        import json
+        buf = io.StringIO(json.dumps(rows, default=str))
+        return StreamingResponse(iter([buf.getvalue()]), media_type="application/json",
+                                  headers={"Content-Disposition": "attachment; filename=events.json"})
+
     buf = io.StringIO()
     if rows:
         writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
-                             headers={"Content-Disposition":
-                                      'attachment; filename="reviveo-events.csv"'})
+                              headers={"Content-Disposition": "attachment; filename=events.csv"})
 
 
-@router.get("/events/{event_id}")
-def get_event_detail(event_id: str):
-    ev = db.get_event(event_id)
-    if ev is None or ev["merchant_id"] != _MERCHANT:
-        raise HTTPException(404, f"event '{event_id}' not found")
-    payload = _decorate(ev)
-    payload["decisions"] = db.query_all(
-        "SELECT * FROM decisions WHERE event_id=? ORDER BY id", (event_id,))
-    payload["attempts"] = db.list_attempts_for_event(event_id)
-    payload["approvals"] = db.query_all(
-        "SELECT id, status, proposed_action, amount_paise, reason, ai_summary, created_at "
-        "FROM pending_approvals WHERE event_id=? ORDER BY id", (event_id,))
-    return payload
+@router.get("/events/{event_id}", response_model=schemas.EventDetailOut)
+def get_event_detail(event_id: str) -> schemas.EventDetailOut:
+    row = db.get_event(event_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Event not found")
+    decision = db.get_latest_decision(event_id)
+    attempts = db.list_attempts_for_event(event_id)
+    return schemas.EventDetailOut(
+        **{**row, "payment_recovered": bool(row["payment_recovered"]),
+           "subscription_restored": bool(row["subscription_restored"])},
+        latest_action=decision["action"] if decision else None,
+        latest_confidence=decision["confidence"] if decision else None,
+        latest_risk_tier=decision["risk_tier"] if decision else None,
+        attempts=[schemas.RecoveryAttemptOut(**a) for a in attempts],
+    )
 
 
-@router.get("/events/{event_id}/audit-trail")
-def event_audit_trail(event_id: str):
-    ev = db.get_event(event_id)
-    if ev is None or ev["merchant_id"] != _MERCHANT:
-        raise HTTPException(404, f"event '{event_id}' not found")
-    return {"event_id": event_id, "status": ev["status"],
-            "stages": db.list_audit_for_event(event_id)}
+@router.get("/events/{event_id}/audit-trail", response_model=list[schemas.AuditEntryOut])
+def get_event_audit_trail(event_id: str) -> list[schemas.AuditEntryOut]:
+    if db.get_event(event_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Event not found")
+    rows = db.list_audit_for_event(event_id)
+    return [schemas.AuditEntryOut(**{**r, "ai_used": bool(r["ai_used"]),
+                                      "fallback_triggered": bool(r["fallback_triggered"])})
+            for r in rows]
 
 
 @router.get("/events/{event_id}/raw-log")
-def event_raw_log(event_id: str):
-    rows = db.query_all(
-        "SELECT razorpay_event_id, event_name, raw_payload, status, received_at "
-        "FROM webhook_events WHERE raw_payload LIKE ? ORDER BY id",
-        (f"%{event_id}%",),
-    )
-    return {"event_id": event_id, "webhooks": rows}
+def get_event_raw_log(event_id: str) -> dict:
+    if db.get_event(event_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Event not found")
+    return {
+        "event": db.get_event(event_id),
+        "audit_log": db.list_audit_for_event(event_id),
+        "decisions": db.query_all("SELECT * FROM decisions WHERE event_id=? ORDER BY id", (event_id,)),
+        "recovery_attempts": db.list_attempts_for_event(event_id),
+    }
 
 
-# ── customers ────────────────────────────────────────────────────────────────
-@router.get("/customers")
-def list_customers(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+@router.get("/audit-trail", response_model=list[schemas.AuditEntryOut])
+def get_global_audit_trail(
+    page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=500),
+) -> list[schemas.AuditEntryOut]:
+    merchant_id = _merchant_id()
     offset = (page - 1) * page_size
-    return {"page": page, "total": db.count_customers(_MERCHANT),
-            "items": db.list_customers(_MERCHANT, page_size, offset)}
+    rows = db.list_all_audit(merchant_id, limit=page_size, offset=offset)
+    return [schemas.AuditEntryOut(**{**r, "ai_used": bool(r["ai_used"]),
+                                      "fallback_triggered": bool(r["fallback_triggered"])})
+            for r in rows]
 
 
-@router.get("/customers/{customer_id}")
-def customer_detail(customer_id: str):
-    c = db.get_customer(_MERCHANT, customer_id)
-    if c is None:
-        raise HTTPException(404, f"customer '{customer_id}' not found")
-    c["subscriptions"] = db.query_all(
-        "SELECT * FROM subscriptions WHERE merchant_id=? AND customer_id=?",
-        (_MERCHANT, customer_id))
-    c["events"] = db.list_events(_MERCHANT, limit=50, offset=0)
-    c["events"] = [e for e in c["events"] if e.get("customer_id") == customer_id]
-    return c
+# ── Customers ─────────────────────────────────────────────────────────────────
+@router.get("/customers", response_model=schemas.PaginatedCustomers)
+def list_customers_route(page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=200)) -> schemas.PaginatedCustomers:
+    merchant_id = _merchant_id()
+    offset = (page - 1) * page_size
+    rows = db.list_customers(merchant_id, limit=page_size, offset=offset)
+    total = db.count_customers(merchant_id)
+    return schemas.PaginatedCustomers(items=[schemas.CustomerOut(**r) for r in rows],
+                                       total=total, page=page, page_size=page_size)
 
 
-# ── guardrails ───────────────────────────────────────────────────────────────
-@router.get("/guardrails")
-def get_guardrails():
-    cfg = db.get_guardrail_config(_MERCHANT)
-    counter = db.get_daily_counter(_MERCHANT)
-    return {**cfg, "daily_counters": counter}
+@router.get("/customers/{customer_id}", response_model=schemas.CustomerOut)
+def get_customer_route(customer_id: str) -> schemas.CustomerOut:
+    row = db.get_customer(_merchant_id(), customer_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+    return schemas.CustomerOut(**row)
 
 
-@router.put("/guardrails")
-def put_guardrails(cfg: dict):
-    """Server-side bounds validation — the frontend form is never trusted."""
-    try:
-        environment = cfg.get("environment", "test")
-        if environment not in ("test", "production"):
-            raise ValueError("environment must be test|production")
-        channels = cfg.get("allowed_channels", ["email", "payment_link"])
-        unknown = set(channels) - _KNOWN_CHANNELS
-        if unknown:
-            raise ValueError(f"unknown channels: {sorted(unknown)}")
-
-        def bounded_int(key: str, lo: int, hi: int) -> int:
-            v = int(cfg.get(key))
-            if not (lo <= v <= hi):
-                raise ValueError(f"{key} must be within [{lo}, {hi}]")
-            return v
-
-        def bounded_float(key: str, lo: float, hi: float) -> float:
-            v = float(cfg.get(key))
-            if not (lo <= v <= hi):
-                raise ValueError(f"{key} must be within [{lo}, {hi}]")
-            return v
-
-        validated = {
-            "environment": environment,
-            "allowed_channels": list(channels),
-            "recovery_window_days": bounded_int("recovery_window_days", 1, 30),
-            "high_confidence": bounded_float("high_confidence", 0.5, 1.0),
-            "low_confidence": bounded_float("low_confidence", 0.0, 0.9),
-            "max_retries": bounded_int("max_retries", 1, 10),
-            "cooldown_hours": bounded_int("cooldown_hours", 0, 168),
-            "max_autonomous_recovery_amount_paise":
-                bounded_int("max_autonomous_recovery_amount_paise", 100, 100_000_000),
-            "daily_recovery_value_cap_paise":
-                bounded_int("daily_recovery_value_cap_paise", 100, 1_000_000_000),
-            "daily_contact_cap": bounded_int("daily_contact_cap", 0, 100_000),
-        }
-        if validated["low_confidence"] >= validated["high_confidence"]:
-            raise ValueError("low_confidence must be below high_confidence")
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(422, str(exc))
-    return db.upsert_guardrail_config(_MERCHANT, validated)
+# ── Guardrails ────────────────────────────────────────────────────────────────
+_VALID_CHANNELS = {"email", "payment_link", "sms"}
 
 
-@router.get("/guardrails/pending-approvals")
-def pending_approvals():
-    return {"items": db.list_pending_approvals(_MERCHANT)}
+@router.get("/guardrails", response_model=schemas.GuardrailConfigOut)
+def get_guardrails_route() -> schemas.GuardrailConfigOut:
+    cfg = db.get_guardrail_config(_merchant_id())
+    if cfg is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Guardrail config not found")
+    return schemas.GuardrailConfigOut(**cfg)
 
 
-# ── strategies ───────────────────────────────────────────────────────────────
-@router.get("/strategies")
-def strategies(range: str = Query("30d")):
-    rows = db.strategy_breakdown(_MERCHANT, _since(range))
+@router.put("/guardrails", response_model=schemas.GuardrailConfigOut)
+def put_guardrails_route(body: schemas.GuardrailConfigIn) -> schemas.GuardrailConfigOut:
+    if body.low_confidence >= body.high_confidence:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                             "low_confidence must be less than high_confidence")
+    unknown = set(body.allowed_channels) - _VALID_CHANNELS
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Unsupported channel(s) {sorted(unknown)} — only {sorted(_VALID_CHANNELS)} are wired up; "
+            f"WhatsApp/Voice are not yet integrated and must not be toggleable as if they were.",
+        )
+    cfg = db.upsert_guardrail_config(_merchant_id(), body.model_dump())
+    return schemas.GuardrailConfigOut(**cfg)
+
+
+@router.get("/guardrails/pending-approvals", response_model=list[schemas.PendingApprovalOut])
+def get_pending_approvals_route() -> list[schemas.PendingApprovalOut]:
+    rows = db.list_pending_approvals(_merchant_id())
+    return [schemas.PendingApprovalOut(**r) for r in rows]
+
+
+# ── Strategies ────────────────────────────────────────────────────────────────
+@router.get("/strategies", response_model=list[schemas.StrategyOut])
+def get_strategies_route(range: int = Query(default=90, ge=1, le=365, alias="range")) -> list[schemas.StrategyOut]:
+    rows = db.strategy_breakdown(_merchant_id(), _since(range))
+    out = []
     for r in rows:
-        r["success_rate_pct"] = (round(r["recovered_count"] / r["attempts"] * 100, 1)
-                                 if r["attempts"] else 0.0)
-    return rows
+        rate = (r["recovered_count"] / r["attempts"]) if r["attempts"] else 0.0
+        out.append(schemas.StrategyOut(
+            mechanism=r["mechanism"] or "unknown", attempts=r["attempts"],
+            recovered_paise=r["recovered_paise"], recovered_count=r["recovered_count"],
+            success_rate=round(rate, 4),
+        ))
+    return out
 
 
-# ── approvals ────────────────────────────────────────────────────────────────
-@router.post("/approvals/{approval_id}/approve")
-def approve(approval_id: int):
-    from ..services import approvals as approvals_service
+# ── Approvals (doc §3.12: pending -> approved -> executing -> executed, ──────
+#    each transition claimed atomically so double-clicks/concurrent
+#    reviewers cannot trigger duplicate money-moving operations) ─────────────
+@router.post("/approvals/{approval_id}/approve", response_model=schemas.ApprovalActionOut)
+def approve_approval(approval_id: int, body: schemas.ApprovalActionIn = schemas.ApprovalActionIn()) -> schemas.ApprovalActionOut:
+    approval = db.get_approval(approval_id)
+    if approval is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Approval not found")
 
-    try:
-        result = approvals_service.approve(approval_id)
-    except KeyError as exc:
-        raise HTTPException(404, str(exc))
-    if not result.get("ok") and result.get("error") == "conflict":
-        raise HTTPException(409, result.get("detail", "conflict"))
-    return result
+    if not db.set_approval_status(approval_id, from_status="pending", to_status="approved",
+                                   resolved_by=body.resolved_by):
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                             "This approval was already resolved by someone else.")
+    if not db.set_approval_status(approval_id, from_status="approved", to_status="executing",
+                                   resolved_by=body.resolved_by):
+        # Should be unreachable (we just claimed it above), but the atomic
+        # claim below is the real safety net if it ever races.
+        raise HTTPException(status.HTTP_409_CONFLICT, "This approval is already executing.")
 
+    event = db.get_event(approval["event_id"])
+    proposed_action = approval["proposed_action"]
+    execution_mechanism = approval["execution_mechanism"]
 
-@router.post("/approvals/{approval_id}/deny")
-def deny(approval_id: int, body: dict | None = None):
-    from ..services import approvals as approvals_service
+    # Stale-decision protection (doc §3.13): if the underlying decision has
+    # expired, re-analyze before acting on it rather than executing a
+    # possibly-outdated proposal.
+    latest_decision = db.get_latest_decision(approval["event_id"])
+    if latest_decision and latest_decision.get("decision_expires_at"):
+        from datetime import datetime, timezone
+        expires_at = datetime.fromisoformat(latest_decision["decision_expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > expires_at:
+            from ..pipeline import pipeline as pipeline_module
+            fresh = pipeline_module.reanalyze_decision(event)
+            proposed_action, execution_mechanism = fresh["action"], fresh["execution_mechanism"]
+            db.insert_audit({"event_id": approval["event_id"], "merchant_id": approval["merchant_id"],
+                              "stage": "decided", "message": "Re-analyzed stale decision before approval execution",
+                              "payload": {"approval_id": approval_id, "fresh_action": proposed_action}})
 
-    reason = (body or {}).get("reason", "")
-    try:
-        result = approvals_service.deny(approval_id, reason=reason)
-    except KeyError as exc:
-        raise HTTPException(404, str(exc))
-    if not result.get("ok"):
-        raise HTTPException(409, result.get("detail", "conflict"))
-    return result
+    recovery_attempt_id = None
+    if execution_mechanism:
+        from ..enums import Action, ExecutionMechanism
+        from ..services import execution_service
+        customer = db.get_customer(approval["merchant_id"], event["customer_id"]) if event.get("customer_id") else None
+        result = execution_service.execute_action(
+            merchant_id=approval["merchant_id"], event=event,
+            action=Action(proposed_action), mechanism=ExecutionMechanism(execution_mechanism),
+            customer=customer,
+        )
+        recovery_attempt_id = result.recovery_attempt_id
+        new_status = EventStatus.scheduled.value if result.status == "scheduled" else EventStatus.waiting_for_outcome.value
+        db.update_event(approval["event_id"], status=new_status)
+        db.insert_audit({"event_id": approval["event_id"], "merchant_id": approval["merchant_id"],
+                          "stage": "executed", "message": f"Approved and executed via {result.execution_mechanism}",
+                          "payload": {"approval_id": approval_id, "recovery_attempt_id": recovery_attempt_id}})
+    else:
+        # A genuine escalate_to_human proposal — there is no automated
+        # mechanism to run; approving records that a human is handling this
+        # outside the system (e.g. a manual call), and closes the event.
+        db.update_event(approval["event_id"], status=EventStatus.closed.value)
+        db.insert_audit({"event_id": approval["event_id"], "merchant_id": approval["merchant_id"],
+                          "stage": "outcome", "message": "Approved for manual handling by a human",
+                          "payload": {"approval_id": approval_id}})
 
-
-# ── global audit trail ───────────────────────────────────────────────────────
-@router.get("/audit-trail")
-def global_audit_trail(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)):
-    offset = (page - 1) * page_size
-    items = db.list_all_audit(_MERCHANT, page_size, offset)
-    return {"page": page, "items": items}
-
-
-# ── demo injection (synthetic mode only) ─────────────────────────────────────
-@router.post("/demo/inject-event")
-def demo_inject_event(body: dict):
-    if settings.is_live:
-        raise HTTPException(403, "Injection disabled in live mode.")
-    from ..pipeline import pipeline
-
-    event_type = body.get("type", "payment_failed")
-    if event_type not in EventType._value2member_map_:
-        raise HTTPException(422, f"type must be one of {sorted(EventType._value2member_map_)}")
-    error_code = body.get("error_code")
-    if error_code is not None:
-        classify_cause(error_code)  # raises nothing; just sanity
-
-    customers = db.list_customers(_MERCHANT, 1, 0)
-    customer_id = body.get("customer_id") or (customers[0]["id"] if customers else None)
-
-    ev = pipeline.ingest_event({
-        "merchant_id": _MERCHANT,
-        "type": event_type,
-        "customer_id": customer_id,
-        "subscription_id": body.get("subscription_id"),
-        "invoice_id": body.get("invoice_id"),
-        "error_code": error_code or "card_expired",
-        "amount_paise": int(body.get("amount_paise", 99900)),
-        "origin": "synthetic",
-    })
-    result = pipeline.process_event(ev["event_id"])
-    return {"ingested": ev["event_id"], "result": result}
-
-
-# ── batch ────────────────────────────────────────────────────────────────────
-@router.post("/batch/run")
-def batch_run(body: dict):
-    from ..batch.batch_runner import run_batch
-
-    n = int(body.get("n_events", 25))
-    n = max(1, min(n, 500))
-    use_ai = bool(body.get("use_ai", False))
-    dry_run = bool(body.get("dry_run", True))
-    seed = body.get("seed")
-    return run_batch(n_events=n, dry_run=dry_run, use_ai=use_ai,
-                     seed=int(seed) if seed is not None else None)
+    db.set_approval_status(approval_id, from_status="executing", to_status="executed", resolved_by=body.resolved_by)
+    return schemas.ApprovalActionOut(id=approval_id, status="executed", event_id=approval["event_id"],
+                                      recovery_attempt_id=recovery_attempt_id)
 
 
-@router.get("/batch/last-summary")
-def batch_last_summary():
-    last = db.get_last_simulation(_MERCHANT)
-    if last is None:
-        raise HTTPException(404, "no simulation run yet — POST /api/reports/simulate first")
-    return last
+@router.post("/approvals/{approval_id}/deny", response_model=schemas.ApprovalActionOut)
+def deny_approval(approval_id: int, body: schemas.ApprovalActionIn = schemas.ApprovalActionIn()) -> schemas.ApprovalActionOut:
+    approval = db.get_approval(approval_id)
+    if approval is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Approval not found")
+
+    claimed = db.set_approval_status(approval_id, from_status="pending", to_status="denied",
+                                      resolved_by=body.resolved_by)
+    if not claimed:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                             "This approval was already resolved by someone else.")
+
+    # A genuine escalation that's denied means no further recovery will be
+    # attempted (terminal `escalated`); a denied executable action is a
+    # deliberate non-execution (terminal `failed`) rather than a system error.
+    final_status = (EventStatus.escalated.value if not approval["execution_mechanism"]
+                    else EventStatus.failed.value)
+    db.update_event(approval["event_id"], status=final_status)
+    db.insert_audit({"event_id": approval["event_id"], "merchant_id": approval["merchant_id"],
+                      "stage": "outcome", "message": f"Approval denied by {body.resolved_by}",
+                      "payload": {"approval_id": approval_id, "status": final_status}})
+    return schemas.ApprovalActionOut(id=approval_id, status="denied", event_id=approval["event_id"],
+                                      recovery_attempt_id=approval.get("recovery_attempt_id"))
 
 
-@router.post("/reports/simulate")
-def reports_simulate(body: dict):
-    from ..batch.batch_runner import run_simulation
+# ── Batch (demo control) ───────────────────────────────────────────────────────
+@router.post("/batch/run", response_model=schemas.BatchRunOut)
+def run_batch_route(body: schemas.BatchRunIn) -> schemas.BatchRunOut:
+    from ..batch import batch_runner
+    result = batch_runner.run_batch(
+        merchant_id=_merchant_id(), n_events=body.n_events, dry_run=body.dry_run,
+        use_ai=body.use_ai, random_seed=body.random_seed,
+    )
+    return schemas.BatchRunOut(**result)
 
-    n = int((body or {}).get("n_events", 200))
-    seed = (body or {}).get("seed")
-    return run_simulation(n_events=max(20, min(n, 1000)),
-                          seed=int(seed) if seed is not None else None)
 
-
-# keep linters honest about intentionally-imported enums used in docs above
-_ = (Cause, EventStatus)
+@router.get("/batch/last-summary", response_model=Optional[schemas.BatchRunOut])
+def get_last_batch_summary() -> Optional[schemas.BatchRunOut]:
+    row = db.get_last_simulation(_merchant_id())
+    if row is None:
+        return None
+    return schemas.BatchRunOut(
+        simulation_run_id=row["simulation_run_id"], n_events=row["n_events"],
+        use_ai=bool(row["use_ai"]), dry_run=bool(row["dry_run"]),
+        baseline=row["baseline"], treatment=row["treatment"], created_at=row["created_at"],
+    )
