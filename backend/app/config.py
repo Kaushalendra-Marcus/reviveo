@@ -33,9 +33,24 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     ai_model_fast: str = "claude-haiku-4-5-20251001"
-    ai_model_summary: str = "claude-sonnet-4-6"
+    ai_model_summary: str = "claude-sonnet-5"
 
     frontend_origin: str = "http://localhost:3000"
+
+    # Runtime / financial guardrails (doc §3.10) — module-level constants that
+    # are not merchant-tunable (unlike guardrail_config, which is).
+    max_agent_steps_per_event: int = 6
+    max_agent_wall_time_seconds: int = 15
+    max_tool_calls_per_event: int = 6
+    max_recovery_attempts: int = 3
+    max_recovery_lifetime_days: int = 7
+    decision_ttl_hours: int = 24
+
+    # In-process scheduler for scheduled-action revalidation (doc §3.11).
+    # No message queue/workers per doc §0 — a periodic asyncio loop in the
+    # same process re-enters the same guarded execution path.
+    scheduler_poll_interval_seconds: int = 30
+    scheduler_enabled: bool = True
 
     @property
     def is_live(self) -> bool:
