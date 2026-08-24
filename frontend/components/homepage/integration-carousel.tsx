@@ -24,40 +24,34 @@ const merchants: Merchant[] = [
     color: '#E50914',
   },
   {
-    id: 'amazon',
-    label: 'Amazon',
-    logo: 'https://cdn.simpleicons.org/amazon/FF9900',
-    color: '#FF9900',
-  },
-  {
-    id: 'aws',
-    label: 'AWS',
-    logo: 'https://cdn.simpleicons.org/amazonaws/FF9900',
-    color: '#FF9900',
-  },
-  {
-    id: 'flipkart',
-    label: 'Flipkart',
-    logo: 'https://cdn.simpleicons.org/flipkart/047BD5',
-    color: '#047BD5',
-  },
-  {
-    id: 'zomato',
-    label: 'Zomato',
-    logo: 'https://cdn.simpleicons.org/zomato/E23744',
-    color: '#E23744',
-  },
-  {
     id: 'swiggy',
     label: 'Swiggy',
     logo: 'https://cdn.simpleicons.org/swiggy/FC8019',
     color: '#FC8019',
   },
   {
-    id: 'myntra',
-    label: 'Myntra',
-    logo: 'https://cdn.simpleicons.org/myntra/FF3F6C',
-    color: '#FF3F6C',
+    id: 'aws',
+    label: 'AWS',
+    logo: '/partners/aws.png',
+    color: '#FF9900',
+  },
+  {
+    id: 'claude',
+    label: 'Claude',
+    logo: '/partners/claude.png',
+    color: '#D97706',
+  },
+  {
+    id: 'prime-video',
+    label: 'Prime Video',
+    logo: '/partners/prime-video.png',
+    color: '#00A8E1',
+  },
+  {
+    id: 'pw',
+    label: 'PW',
+    logo: '/partners/pw.png',
+    color: '#6c2eb9',
   },
 ];
 
