@@ -50,8 +50,10 @@ export const api = {
 };
 
 /** Downloads an authenticated export as a file blob (events export). */
-export async function downloadExport(format: "csv" | "json"): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/events/export?format=${format}`, {
+export async function downloadExport(format: "csv" | "json", status?: string): Promise<void> {
+  const params = new URLSearchParams({ format });
+  if (status) params.set("status", status);
+  const response = await fetch(`${API_BASE_URL}/api/events/export?${params.toString()}`, {
     headers: { "X-API-Key": API_KEY },
     cache: "no-store",
   });

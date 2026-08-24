@@ -15,14 +15,14 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { ConfidenceBadge } from "@/components/shared/confidence-badge";
 import { EmptyState } from "@/components/shared/states";
 import { ACTION_LABELS, CAUSE_LABELS, EVENT_TYPE_LABELS, formatINR, formatRelative } from "@/lib/formatters";
-import type { EventListItem } from "@/lib/types";
+import type { EventOut } from "@/lib/types";
 
 export function EventTable({
   events,
   emptyTitle = "No events yet",
   emptyMessage = "Events will appear here as soon as a payment failure is detected.",
 }: {
-  events: EventListItem[];
+  events: EventOut[];
   emptyTitle?: string;
   emptyMessage?: string;
 }) {
@@ -67,17 +67,17 @@ export function EventTable({
                 {formatINR(event.amount_paise)}
               </TableCell>
               <TableCell>
-                {event.latest_decision ? (
+                {event.latest_confidence !== null ? (
                   <ConfidenceBadge
-                    confidence={event.latest_decision.confidence}
-                    riskTier={event.latest_decision.risk_tier}
+                    confidence={event.latest_confidence}
+                    riskTier={event.latest_risk_tier ?? undefined}
                   />
                 ) : (
                   <span className="text-xs text-slate-400">—</span>
                 )}
               </TableCell>
               <TableCell className="text-slate-600">
-                {event.latest_decision ? ACTION_LABELS[event.latest_decision.action] : "—"}
+                {event.latest_action ? ACTION_LABELS[event.latest_action] : "—"}
               </TableCell>
               <TableCell>
                 <StatusBadge status={event.status} />

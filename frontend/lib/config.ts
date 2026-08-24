@@ -17,5 +17,14 @@ export const ACTIVE_EVENT_STATUSES = [
   "waiting_for_outcome",
 ] as const;
 
-export const KNOWN_CHANNELS = ["email", "payment_link"] as const;
-export const DISABLED_CHANNELS = ["sms", "whatsapp"] as const;
+/** Must match backend/app/api/routes.py `_VALID_CHANNELS` exactly — that
+ * set is the real enforcement; this list only drives which toggles the
+ * Settings UI shows as available vs. explicitly not-yet-wired-up. */
+export const KNOWN_CHANNELS = ["email", "payment_link", "sms"] as const;
+export const DISABLED_CHANNELS = ["whatsapp", "voice"] as const;
+
+export const RANGE_OPTIONS: { label: string; value: 7 | 30 | 90 }[] = [
+  { label: "7 days", value: 7 },
+  { label: "30 days", value: 30 },
+  { label: "90 days", value: 90 },
+];
