@@ -83,6 +83,14 @@ class SummaryOut(BaseModel):
     actions_executed: int
     actions_succeeded: int
     recovery_rate: float  # recovered_count / events_processed, 0..1
+    # Period-over-period deltas vs the immediately preceding window of equal
+    # length (doc A1 "deltas_vs_previous"). Relative % change for money/count
+    # metrics; percentage-POINT change (not relative %) for the rate metric,
+    # so a 5%->50% swing reads as "+45", not a confusing "+900%". None when
+    # the prior period had no baseline to compare against (e.g. a new merchant).
+    delta_revenue_at_risk_pct: Optional[float] = None
+    delta_recovered_pct: Optional[float] = None
+    delta_recovery_rate_pct: Optional[float] = None
 
 
 class TimeseriesPoint(BaseModel):
@@ -197,3 +205,24 @@ class BatchRunOut(BaseModel):
     treatment: Optional[dict] = None
     created_at: str
     label: str = "Modeled incremental lift — not a measured causal effect (no randomized control group)."
+
+
+# ── Demo (single-event injection, synthetic mode only) ─────────────────────────
+class DemoInjectIn(BaseModel):
+    type: str = Field(pattern="^(payment_failed|subscription_failed|subscription_halted|abandoned_checkout)$")
+    error_code: Optional[str] = None
+    customer_id: Optional[str] = None
+    subscription_id: Optional[str] = None
+    amount_paise: Optional[int] = Field(default=None, ge=0)
+
+
+class DemoInjectOut(BaseModel):
+    ingested: str
+    result: dict
+
+
+# ── Reports (alias of /batch/run using the field names documented in
+#    status.md's quick-start; always deterministic/free) ───────────────────────
+class ReportSimulateIn(BaseModel):
+    n_events: int = Field(default=50, ge=1, le=2000)
+    seed: Optional[int] = None
