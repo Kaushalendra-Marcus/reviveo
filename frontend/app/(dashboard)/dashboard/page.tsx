@@ -43,6 +43,8 @@ export default function DashboardOverviewPage() {
             icon={<AlertTriangle className="size-4" />}
             loading={summary.isLoading}
             hint={`${summary.data?.events_processed ?? 0} events`}
+            deltaPct={summary.data?.delta_revenue_at_risk_pct}
+            deltaGoodDirection="down"
           />
           <MetricCard
             label="Recovered"
@@ -50,6 +52,7 @@ export default function DashboardOverviewPage() {
             icon={<CheckCircle2 className="size-4" />}
             loading={summary.isLoading}
             hint={`${summary.data?.recovered_count ?? 0} payments`}
+            deltaPct={summary.data?.delta_recovered_pct}
           />
           <MetricCard
             label="Recovery Rate"
@@ -57,6 +60,7 @@ export default function DashboardOverviewPage() {
             icon={<ArrowUpRight className="size-4" />}
             loading={summary.isLoading}
             hint="of processed events"
+            deltaPct={summary.data?.delta_recovery_rate_pct}
           />
           <MetricCard
             label="Actions Executed"

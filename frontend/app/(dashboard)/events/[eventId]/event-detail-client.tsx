@@ -141,7 +141,9 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                           <TableCell className="text-right font-medium tabular-nums">{formatINR(a.amount_paise)}</TableCell>
                           <TableCell className="text-slate-600">{titleCase(a.status)}</TableCell>
                           <TableCell className="text-slate-500">{a.execution_mode === "dry_run" ? "Dry Run" : "Live"}</TableCell>
-                          <TableCell className="font-mono text-xs text-slate-500">{a.razorpay_ref ?? "—"}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-500">
+                            {a.reference_id ?? a.razorpay_ref ?? "—"}
+                          </TableCell>
                           <TableCell className="text-xs text-slate-500">{formatDateTime(a.created_at)}</TableCell>
                           <TableCell className="text-xs text-slate-500">{a.resolved_at ? formatDateTime(a.resolved_at) : "—"}</TableCell>
                         </TableRow>

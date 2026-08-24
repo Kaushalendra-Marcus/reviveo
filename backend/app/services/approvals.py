@@ -1,11 +1,13 @@
 """Human approval workflow (doc A2, §3.12, §3.13).
 
 Canonical approval state machine used by the scheduler (`expire_stale`) and
-available to `api/routes.py` for `POST /api/approvals/{id}/approve|deny`.
-`enqueue()` is shared by the deterministic pipeline and the agentic loop
-(`services/agent_service`) — both insert into `pending_approvals` via this
-module (pipeline's direct inserts were migrated to `enqueue` in the 2026-08-24
-consolidation). `agent/tools.py:escalate_to_human` also routes here.
+available to callers that want claim-and-execute in one call. The REST
+endpoint (`api/routes.py approve/deny`) implements the same atomic
+pending→approved→executing→executed transitions inline with stale-decision
+re-analysis; both paths share `db.set_approval_status` rowcount==1 claims.
+`enqueue()` is used by `agent/tools.py`; the deterministic pipeline and
+`services/agent_service` insert via `db.insert_approval` directly (their
+audit rows are written by their own stage accounting).
 
 State machine: pending → approved → executing → executed (branches: denied,
 expired, execution_failed). Claims are atomic (`UPDATE ... WHERE status=?`,
@@ -98,16 +100,19 @@ def approve(approval_id: int, resolved_by: str = "merchant-dashboard") -> dict:
     if expires_at and datetime.now(timezone.utc) > datetime.fromisoformat(expires_at):
         db.set_approval_status(approval_id, ApprovalStatus.executing.value,
                                ApprovalStatus.expired.value, resolved_by)
-        db.update_event(row["event_id"], status=EventStatus.analyzing.value)
+        # No background worker exists to re-process an 'analyzing' event
+        # (doc §0), so route it to the visible terminal escalation state.
+        if event["status"] not in ("recovered", "expired", "escalated", "closed", "failed"):
+            db.update_event(row["event_id"], status=EventStatus.escalated.value)
         db.insert_audit({
             "event_id": row["event_id"], "merchant_id": row["merchant_id"],
             "stage": AuditStage.guardrail.value,
-            "message": "Approval arrived after the decision expired — event sent for "
-                       "re-analysis instead of executing stale instructions.",
+            "message": "Approval arrived after the decision expired — event escalated "
+                       "instead of executing stale instructions.",
             "payload": {"approval_id": approval_id},
         })
         return {"ok": False, "status": "expired",
-                "detail": "Decision stale — event queued for re-analysis."}
+                "detail": "Decision stale — event escalated for fresh review."}
 
     if event["status"] in ("failed", "closed"):
         return finish(ApprovalStatus.execution_failed,
@@ -180,7 +185,10 @@ def deny(approval_id: int, resolved_by: str = "merchant-dashboard",
 
 
 def expire_stale() -> int:
-    """Pending approvals older than the decision TTL expire (§3.12/§3.13)."""
+    """Pending approvals older than the decision TTL expire (§3.12/§3.13).
+    The event moves to the terminal `escalated` state — there is no background
+    worker to pick an 'analyzing' event back up (doc §0 forbids queues), so
+    leaving it mid-pipeline would strand it invisibly on the dashboard."""
     cutoff = (
         datetime.now(timezone.utc) - timedelta(hours=settings.decision_ttl_hours)
     ).isoformat()
@@ -192,9 +200,16 @@ def expire_stale() -> int:
     for r in rows:
         if db.set_approval_status(r["id"], ApprovalStatus.pending.value,
                                   ApprovalStatus.expired.value, "system-ttl"):
-            ev = db.get_approval(r["id"])
-            if ev and db.get_event(ev["event_id"]) is not None:
-                db.update_event(ev["event_id"], status=EventStatus.analyzing.value)
+            approval = db.get_approval(r["id"])
+            ev = db.get_event(approval["event_id"]) if approval else None
+            if ev is not None and ev["status"] not in ("recovered", "expired", "escalated", "closed", "failed"):
+                db.update_event(ev["event_id"], status=EventStatus.escalated.value)
+                db.insert_audit({
+                    "event_id": ev["event_id"], "merchant_id": ev["merchant_id"],
+                    "stage": AuditStage.outcome.value,
+                    "message": "Approval expired unanswered (TTL) — escalated for manual handling.",
+                    "payload": {"approval_id": r["id"], "expired_by": "system-ttl"},
+                })
             n += 1
     return n
 

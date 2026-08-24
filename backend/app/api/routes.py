@@ -334,6 +334,24 @@ def approve_approval(approval_id: int, body: schemas.ApprovalActionIn = schemas.
     proposed_action = approval["proposed_action"]
     execution_mechanism = approval["execution_mechanism"]
 
+    # Out-of-order protection (doc §3.6): the event may have reached a
+    # terminal state through another path (outcome webhook, expiry sweep)
+    # while this approval sat in the queue — executing now would regress it.
+    if event is None:
+        db.set_approval_status(approval_id, from_status="executing", to_status="execution_failed",
+                                resolved_by=body.resolved_by)
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                             f"Event for this approval no longer exists.")
+    if event["status"] in ("recovered", "expired", "escalated", "closed", "failed"):
+        db.set_approval_status(approval_id, from_status="executing", to_status="execution_failed",
+                                resolved_by=body.resolved_by)
+        db.insert_audit({"event_id": approval["event_id"], "merchant_id": approval["merchant_id"],
+                          "stage": "outcome",
+                          "message": f"Approval discarded — event already {event['status']}",
+                          "payload": {"approval_id": approval_id}})
+        return schemas.ApprovalActionOut(id=approval_id, status="execution_failed",
+                                          event_id=approval["event_id"], ok=False)
+
     # Stale-decision protection (doc §3.13): if the underlying decision has
     # expired, re-analyze before acting on it rather than executing a
     # possibly-outdated proposal.
@@ -353,14 +371,26 @@ def approve_approval(approval_id: int, body: schemas.ApprovalActionIn = schemas.
 
     recovery_attempt_id = None
     if execution_mechanism:
-        from ..enums import Action, ExecutionMechanism
-        from ..services import execution_service
-        customer = db.get_customer(approval["merchant_id"], event["customer_id"]) if event.get("customer_id") else None
-        result = execution_service.execute_action(
-            merchant_id=approval["merchant_id"], event=event,
-            action=Action(proposed_action), mechanism=ExecutionMechanism(execution_mechanism),
-            customer=customer,
-        )
+        try:
+            from ..enums import Action, ExecutionMechanism
+            from ..services import execution_service
+            customer = db.get_customer(approval["merchant_id"], event["customer_id"]) if event.get("customer_id") else None
+            result = execution_service.execute_action(
+                merchant_id=approval["merchant_id"], event=event,
+                action=Action(proposed_action), mechanism=ExecutionMechanism(execution_mechanism),
+                customer=customer,
+            )
+        except Exception as exc:  # noqa: BLE001 — a raised error must not leave the
+            # approval stuck in 'executing' with the event frozen mid-transition;
+            # mark execution_failed so the failure is visible and retryable.
+            db.set_approval_status(approval_id, from_status="executing",
+                                    to_status="execution_failed", resolved_by=body.resolved_by)
+            db.insert_audit({"event_id": approval["event_id"], "merchant_id": approval["merchant_id"],
+                              "stage": "executed",
+                              "message": f"Approval execution raised an error: {exc}",
+                              "payload": {"approval_id": approval_id, "error": str(exc)}})
+            return schemas.ApprovalActionOut(id=approval_id, status="execution_failed",
+                                              event_id=approval["event_id"], ok=False)
         recovery_attempt_id = result.recovery_attempt_id
         new_status = EventStatus.scheduled.value if result.status == "scheduled" else EventStatus.waiting_for_outcome.value
         db.update_event(approval["event_id"], status=new_status)

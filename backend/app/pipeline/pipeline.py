@@ -81,20 +81,24 @@ def _process_event_deterministic(event: dict, cfg: dict) -> dict:
 
     customer = db.get_customer(merchant_id, event["customer_id"]) if event.get("customer_id") else None
     subscription = db.get_subscription(event["subscription_id"]) if event.get("subscription_id") else None
-    sub_state_before = subscription["state"] if subscription else None
+    # Live current state drives the policy decision (a halted subscription must
+    # be decided on *now* semantics), while the persisted
+    # subscription_state_before keeps the ingest-time transition visible on
+    # the dashboard (doc §3.16).
+    sub_state_live = subscription["state"] if subscription else None
 
     db.update_event(event_id, cause=cause.value, status=EventStatus.analyzing.value,
-                     subscription_state_before=sub_state_before)
+                     subscription_state_before=event.get("subscription_state_before") or sub_state_live)
     _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.analyzed,
            message=f"Classified cause: {cause.value}",
            payload={"cause": cause.value, "customer_id": event.get("customer_id"),
-                     "subscription_state": sub_state_before},
+                     "subscription_state": sub_state_live},
            ai_used=ai_used_for_cause, fallback_triggered=fallback_used)
 
     # ── Stage 3: decided ─────────────────────────────────────────────────────
     attempt_count = db.count_attempts(event_id)
     decision = decision_engine.decide(
-        cause=cause, event_type=event["type"], subscription_state=sub_state_before,
+        cause=cause, event_type=event["type"], subscription_state=sub_state_live,
         customer=customer, attempt_count=attempt_count,
         high_confidence=cfg["high_confidence"], low_confidence=cfg["low_confidence"],
     )

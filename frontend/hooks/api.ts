@@ -72,12 +72,18 @@ export const fetchAuditTrail = async (eventId: string): Promise<AuditEntryOut[]>
 };
 export const fetchRawLog = (eventId: string) =>
   api.get<RawLogResponse>(`/api/events/${encodeURIComponent(eventId)}/raw-log`);
-export const fetchGlobalAudit = async (page: number, pageSize = 50): Promise<AuditEntryOut[]> => {
-  const data = await api.get<AuditEntryOut[] | { items: AuditEntryOut[] }>(
+/** Accepts both the current `{items,total,page,page_size}` wrapper and the
+ * legacy bare array for backward compatibility with older deployments. */
+export interface GlobalAuditPage {
+  items: AuditEntryOut[];
+  total: number;
+}
+export const fetchGlobalAudit = async (page: number, pageSize = 50): Promise<GlobalAuditPage> => {
+  const data = await api.get<GlobalAuditPage | AuditEntryOut[]>(
     `/api/audit-trail?page=${page}&page_size=${pageSize}`
   );
-  if (Array.isArray(data)) return data;
-  return (data as { items: AuditEntryOut[] }).items ?? [];
+  if (Array.isArray(data)) return { items: data, total: data.length };
+  return { items: data.items ?? [], total: data.total };
 };
 export const fetchCustomers = (page: number, pageSize = 20) =>
   api.get<CustomersPage>(`/api/customers?page=${page}&page_size=${pageSize}`);
@@ -217,8 +223,8 @@ export function useRawLog(eventId: string | undefined) {
   });
 }
 
-/** No `total` is available from this endpoint — callers infer "has next
- * page" from `data.length === pageSize` rather than a real count. */
+/** Real `total` from the backend wrapper (legacy bare-array responses fall
+ * back to length-based inference inside fetchGlobalAudit). */
 export function useGlobalAudit(page: number, pageSize = 50) {
   return useQuery({
     queryKey: queryKeys.globalAudit(page),
@@ -260,6 +266,9 @@ function invalidateAfterApprovalDecision(qc: ReturnType<typeof useQueryClient>) 
   qc.invalidateQueries({ queryKey: ["event"] });
   qc.invalidateQueries({ queryKey: queryKeys.recoveries });
   qc.invalidateQueries({ queryKey: ["audit-trail"] });
+  // Approval execution writes global audit rows too — refresh the
+  // audit-trail page if it is mounted.
+  qc.invalidateQueries({ queryKey: ["global-audit"] });
 }
 
 export function useApproveApproval() {

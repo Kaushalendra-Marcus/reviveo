@@ -122,9 +122,11 @@ def create_payment_link(
 
 
 def fetch_payment_link(razorpay_ref: str) -> Optional[dict]:
-    """Fetches current Payment Link state — used by the scheduler when
-    revalidating a scheduled action (doc §3.11). Synthetic refs are not
-    fetchable and return None."""
+    """Fetches current Payment Link state (live mode only). Available for
+    operators/tools that need to reconcile a link's server-side state; the
+    scheduler's revalidation path currently relies on guardrail re-checks and
+    webhook outcomes instead of polling. Synthetic refs are not fetchable
+    and return None."""
     if razorpay_ref.startswith("plink_synthetic_") or not (settings.is_live and settings.razorpay_configured):
         return None
     try:

@@ -161,6 +161,12 @@ export function GuardrailForm() {
               value={form.max_retries}
               onChange={(e) => set("max_retries", Number(e.target.value))}
             />
+            {data && data.effective_max_retries < form.max_retries ? (
+              <p className="mt-1 flex items-center gap-1 text-xs font-medium text-amber-600">
+                <AlertTriangle className="size-3" />
+                System ceiling is {data.effective_max_retries} — values above it are clamped server-side.
+              </p>
+            ) : null}
           </div>
           <div>
             <Label htmlFor="cooldown_hours">Cooldown between attempts (hours)</Label>

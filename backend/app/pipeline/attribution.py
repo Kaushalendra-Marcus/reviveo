@@ -82,8 +82,12 @@ def attribute_payment(
         if not satisfies_amount:
             problems.append("amount below the outstanding obligation")
         reason = f"Payment received but {' and '.join(problems)} — not counted as recovered revenue."
-        db.update_event(attempt["event_id"], status=EventStatus.closed.value,
-                         razorpay_payment_id=razorpay_payment_id)
+        # Never regress an already-recovered event to `closed` because a
+        # different attempt's link later paid short/late (doc §3.5: terminal
+        # states don't move backwards).
+        if event.get("status") != EventStatus.recovered.value:
+            db.update_event(attempt["event_id"], status=EventStatus.closed.value,
+                             razorpay_payment_id=razorpay_payment_id)
 
     return AttributionResult(accepted=accepted, within_window=within_window,
                               satisfies_amount=satisfies_amount, reason=reason)

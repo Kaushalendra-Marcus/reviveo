@@ -20,6 +20,14 @@ logger = get_logger("reviveo.main")
 async def lifespan(app: FastAPI):
     db.init_db()
     ensure_seed()
+    if settings.is_live and not settings.razorpay_webhook_secret:
+        # In live mode /webhooks/razorpay is the only unauthenticated surface
+        # (HMAC instead of X-API-Key); running it with signature verification
+        # disabled would be open ingestion of money-moving events.
+        logger.warning(
+            "RUN_MODE=live without RAZORPAY_WEBHOOK_SECRET — webhook signature "
+            "verification is bypassed; set the secret before exposing this API.",
+        )
     logger.info(
         "reviveo started",
         extra={"context": {"run_mode": settings.run_mode.value,

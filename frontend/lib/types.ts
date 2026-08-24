@@ -87,8 +87,10 @@ export interface EventOut {
   latest_risk_tier: RiskTier | null;
 }
 
-/** schemas.RecoveryAttemptOut — deliberately narrower than the `recovery_attempts`
- * table: no event_id/merchant_id/reference_id/notes on the wire. */
+/** schemas.RecoveryAttemptOut — narrower than the `recovery_attempts`
+ * table: no event_id/merchant_id/notes_json on the wire. `reference_id`
+ * (rvo_…) is the §3.7 outbound correlation key; `razorpay_ref` (plink_…)
+ * is Razorpay's own link id. */
 export interface RecoveryAttemptOut {
   recovery_attempt_id: string;
   attempt_number: number;
@@ -98,15 +100,32 @@ export interface RecoveryAttemptOut {
   status: RecoveryAttemptStatus;
   execution_mode: ExecutionMode;
   razorpay_ref: string | null;
+  reference_id: string | null;
   scheduled_for: string | null;
   created_at: string;
   resolved_at: string | null;
 }
 
-/** GET /api/events/{id} — schemas.EventDetailOut = EventOut + attempts.
- * There is no separate decisions/approvals array on this endpoint. */
+/** schemas.DecisionOut — one row of an event's full decision history. */
+export interface DecisionOut {
+  id: number;
+  action: ActionName;
+  execution_mechanism: ExecutionMechanism | null;
+  confidence: number;
+  risk_tier: RiskTier;
+  requires_approval: boolean;
+  reasoning: string | null;
+  ai_used: boolean;
+  policy_version: string | null;
+  decision_expires_at: string | null;
+  created_at: string;
+}
+
+/** GET /api/events/{id} — schemas.EventDetailOut = EventOut + the full
+ * recovery_attempts and decisions histories for this event. */
 export interface EventDetail extends EventOut {
   attempts: RecoveryAttemptOut[];
+  decisions: DecisionOut[];
 }
 
 export interface Paginated<T> {
@@ -118,9 +137,9 @@ export interface Paginated<T> {
 
 export type EventsPage = Paginated<EventOut>;
 
-/** schemas.AuditEntryOut. Both `/api/events/{id}/audit-trail` and
- * `/api/audit-trail` return this shape as a bare JSON array — no
- * pagination wrapper, no `total` count. */
+/** schemas.AuditEntryOut — the entry shape shared by both audit endpoints.
+ * `GET /api/events/{id}/audit-trail` wraps them as `{event_id, stages}`;
+ * `GET /api/audit-trail` returns `{items, total, page, page_size}`. */
 export interface AuditEntryOut {
   id: number;
   event_id: string;
@@ -232,7 +251,7 @@ export interface Customer {
 
 export type CustomersPage = Paginated<Customer>;
 
-/** schemas.GuardrailConfigOut (GET /api/guardrails). */
+/** schemas.GuardrailConfigOut (GET/PUT /api/guardrails). */
 export interface GuardrailConfig {
   merchant_id: string;
   environment: "test" | "production";
@@ -246,6 +265,10 @@ export interface GuardrailConfig {
   daily_contact_cap: number;
   allowed_channels: string[];
   updated_at: string;
+  /** min(max_retries, system ceiling settings.max_recovery_attempts) — the
+   * value actually enforced; when smaller than max_retries the merchant's
+   * configured value is silently clamped and the UI should say so. */
+  effective_max_retries: number;
 }
 
 /** schemas.GuardrailConfigIn (PUT body) — every field is required; the API
@@ -265,7 +288,7 @@ export interface GuardrailConfigInput {
 }
 
 /** schemas.PendingApprovalOut. GET /api/guardrails/pending-approvals
- * returns a bare array of these — no wrapper object. */
+ * returns `{items, total}`. */
 export interface PendingApproval {
   id: number;
   event_id: string;
@@ -279,16 +302,23 @@ export interface PendingApproval {
   created_at: string;
 }
 
-/** schemas.ApprovalActionOut — response of both approve/deny endpoints. */
+/** schemas.ApprovalActionOut — response of both approve/deny endpoints.
+ * `ok:false` marks a discarded/failed execution (e.g. the event reached a
+ * terminal state while the approval sat in the queue). */
 export interface ApprovalActionResult {
   id: number;
   status: string;
   event_id: string;
   recovery_attempt_id: string | null;
+  ok: boolean;
 }
 
-/** schemas.SummaryOut. `recovery_rate` is a 0..1 fraction, not a
- * percentage. There is no period-over-period delta from the backend. */
+/** schemas.SummaryOut. `recovery_rate` is a 0..1 fraction;
+ * `recovery_rate_pct` is the same value pre-multiplied for convenience.
+ * The delta_* fields are period-over-period comparisons against the
+ * immediately preceding window of equal length — relative % change for
+ * money metrics, percentage-POINT change for the rate; `null` when the
+ * prior period had no data to compare against. */
 export interface SummaryResponse {
   range_days: number;
   revenue_at_risk_paise: number;
@@ -298,6 +328,10 @@ export interface SummaryResponse {
   actions_executed: number;
   actions_succeeded: number;
   recovery_rate: number;
+  recovery_rate_pct: number | null;
+  delta_revenue_at_risk_pct: number | null;
+  delta_recovered_pct: number | null;
+  delta_recovery_rate_pct: number | null;
 }
 
 /** schemas.TimeseriesPoint — one metric per point. GET

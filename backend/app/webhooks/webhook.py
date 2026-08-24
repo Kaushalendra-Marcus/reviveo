@@ -31,7 +31,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from .. import db
 from ..config import settings
-from ..enums import EventStatus, EventType
+from ..enums import TERMINAL_STATUSES, EventStatus, EventType
 from ..logging_config import get_logger
 from ..pipeline import attribution, pipeline
 from ..services import razorpay_service
@@ -136,7 +136,9 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
 
     event = {
         "event_id": f"evt_{uuid.uuid4().hex[:16]}",
-        "merchant_id": payload.get("merchant_id", merchant_id),
+        # Server-side scoping only (doc §3.15) — never trust a caller-supplied
+        # merchant_id from the request body.
+        "merchant_id": merchant_id,
         "customer_id": (customer["id"] if customer else direct_customer_id),
         "subscription_id": payload.get("subscription_id"),
         "invoice_id": entity.get("invoice_id"),
@@ -164,6 +166,7 @@ def _handle_subscription_state_event(
     # store the Razorpay subscription id on `subscriptions` at creation time
     # and look it up here the same way.
     subscription = db.query_one("SELECT * FROM subscriptions WHERE id=?", (razorpay_sub_id,))
+    previous_state = subscription["state"] if subscription else None
     if subscription:
         db.update_subscription_state(subscription["id"], new_state)
 
@@ -176,6 +179,10 @@ def _handle_subscription_state_event(
         "error_code": None,
         "amount_paise": subscription["amount_paise"] if subscription else entity.get("amount", 0),
         "status": EventStatus.detected.value,
+        # Record the lifecycle transition on the event itself (doc §3.16:
+        # subscription_state_before / subscription_state_after).
+        "subscription_state_before": previous_state,
+        "subscription_state_after": new_state,
         "origin": "live_test_mode",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -199,6 +206,17 @@ def _handle_outcome_event(merchant_id: str, event_name: str, payload: dict) -> d
         logger.warning("outcome webhook could not be correlated to a recovery attempt", extra={
             "context": {"event_name": event_name, "reference_id": reference_id}})
         return {"status": "ok"}
+
+    # Out-of-order protection (doc §3.5/§3.6): a late expiry/cancellation for a
+    # link whose sibling attempt already recovered the event must never regress
+    # a terminal state. Only `recovered` events keep their status here.
+    current_status = (db.get_event(attempt["event_id"]) or {}).get("status")
+    if (event_name in ("payment_link.expired", "payment_link.cancelled", "payment_link.partially_paid")
+            and current_status in (s.value for s in TERMINAL_STATUSES)):
+        logger.info("ignoring late outcome webhook for already-terminal event", extra={
+            "context": {"event_name": event_name, "event_id": attempt["event_id"],
+                         "current_status": current_status}})
+        return {"status": "ignored_terminal"}
 
     cfg = db.get_guardrail_config(merchant_id) or {}
     recovery_window_days = cfg.get("recovery_window_days", 7)

@@ -1,148 +1,78 @@
 # Reviveo — Evidence-Based Implementation Audit
 
-**Date:** 2026-08-24 | **Workspace:** `/home/kaushal/MY PROJECTS/reviveo` | **Mode:** read-only inspection (no edits)
-**Method:** Full tree read of `backend/app/**`, `frontend/**`, `schema.sql`, `config.py`, `tests/**`; cross-checked `implementation.txt` (378 lines, §3.1-§3.18), `frontend-implementation.txt` (395 lines), `status.md`, `BACKEND_ANALYSIS.md` against live code; ran `pytest -q` (50 passed, 7 failed) to verify contracts.
+**Date:** 2026-08-24 (post-fix verification pass) | **Workspace:** `/home/kaushal/MY PROJECTS/reviveo`
+**Method:** Full re-read of `backend/app/**`, `frontend/{app,components,lib,hooks}/**`, `schema.sql`, `config.py`, `tests/**`; traced every flow end-to-end (webhook → pipeline → decision → guardrail → execution → approval → attribution → API → UI); ran `.venv/bin/python -m pytest -q` (**61 passed, 0 failed**) and `npm run build` (**✓ Compiled successfully**, TypeScript clean, 14 routes); executed a scripted 16-check end-to-end run against the real ASGI app covering inject→summary→events→audit→approvals→webhooks→batch→guardrails→export.
+
+This pass **verified** the earlier fix list against actual code rather than trusting docs, found and fixed **new issues not previously documented**, and left genuinely-unresolved items precisely specified in `TODO.md`.
 
 ---
 
-## 1. Completed and Verified
+## 1. Verified Working (evidence-based)
 
-### Backend Core — Deterministic Pipeline (production-grade)
+### Backend — deterministic core
 
-- **Scaffold & Config `backend/app/main.py:19`, `config.py:20`, `db.py:22`** — `FastAPI` lifespan `init_db()+ensure_seed()+scheduler_task` verified; `Settings(BaseSettings)` loads `.env` via `pydantic-settings`, `RUN_MODE` synthetic/live switch, `is_live`, `razorpay_configured`, `ai_configured` all wired; `GET /health` returns `run_mode/razorpay_configured/ai_configured` no-auth as intended.
-- **DB isolation `backend/app/db.py:1`** — Single module touches SQLite, all calls parameterized (`execute`/`query_one`/`query_all`), `PRAGMA foreign_keys+WAL`, `threading.local` connection. Schema `schema.sql:1-199` complete: all §3.15 `merchant_id` present, money `INTEGER paise`, `UNIQUE(merchant, razorpay_event_id)`, `UNIQUE(event_id, attempt_number)`, `UNIQUE(recovered_razorpay_payment_id)`, indexes verified.
-- **Seed `backend/app/seed.py:33`** — Idempotent merchant `codecraft`, guardrails default (`recovery_window 7d, high 0.85/low 0.50, max_retries 3, cooldown 24h, autonomous ₹5k, daily cap ₹5L, contact 500`), 6 customers (`cust_rahul`…`cust_neha`) + `sub_cust_*` active subscriptions — matches `status.md` seed list.
-- **Cause analysis `backend/app/domain/cause_analysis.py:58`** — Pure, no I/O; `_REASON_MAP` 20+ exact Razorpay `error.reason` → `Cause`, `_KEYWORD_RULES` fallback ordered; `unclassified` forces escalation per `decision_engine.py:30` whitelist. Tested via `test_cause_analysis.py`.
-- **Decision engine `backend/app/domain/decision_engine.py:118`** — `ALLOWED_ACTIONS_BY_CAUSE` hard whitelist (`unclassified`→only `escalate_to_human`), `ACTION_RISK` tiers, `_BASE_CONFIDENCE_BY_CAUSE` deterministic (timeout 0.90 → card_expired 0.65 → unclassified 0.20), `compute_confidence` adjusts for `total_recovered_paise`/`failed_payment_count`/`attempt_count`, `choose_action` honors `subscription_lifecycle.resolve_subscription_action` override, `_requires_approval` implements `≥high auto / <low escalate / medium low-risk only`. `decide()` rejects `requested_action` not in whitelist → `escalate_to_human`. All rule-rows covered by passing `test_decision_engine.py`.
-- **Subscription lifecycle `backend/app/domain/subscription_lifecycle.py:38`** — Implements §3.3 matrix correctly: `subscription_failed+pending → monitor_native_retry (native_subscription_retry, 0.92)`, `halted+card_expired → send_payment_update_link/checkout`, `halted+retry_variant → immediate_retry/manual_charge`; keeps `payment_recovered`/`subscription_restored`/`state` distinct.
-- **Guardrails `backend/app/domain/guardrails.py:40`** — Single enforcement point `check_guardrails()` covering: window (`min(recovery_window, max_recovery_lifetime_days)`), `max_retries` vs `settings.max_recovery_attempts=3`, `cooldown_active` with `retry_after`, `daily_contact_cap` for `CONTACT_ACTIONS`, `daily_recovery_value_cap`, `max_autonomous` → `requires_approval` not block; `escalate_to_human` always passes. Passing `test_guardrails.py`.
-- **Execution service `backend/app/services/execution_service.py:40`, `razorpay_service.py:49`** — ONLY writer of `recovery_attempts` and sole Razorpay caller; `execute_action` creates `ra_{uuid}`, `rvo_{id}` reference, `notes {event_id, attempt_id, attempt_number}`, handles `smart_retry_24h`→`scheduled`, `native_subscription_retry`/`reminder_only`→no Razorpay call, else `create_payment_link` synthetic `plink_synthetic_{hex}` vs live `client.payment_link.create`; `ExecutionMode` (`dry_run`/`live_call`) stored per attempt per §3.14 separation. Shared path used by pipeline+agent+approvals+scheduler.
-- **Pipeline `backend/app/pipeline/pipeline.py:43`** — 6-stage uniform audit (`detected→analyzed→decided→guardrail→executed→outcome`), `process_event` deterministic + `_process_event_deterministic`; `revalidate_and_execute_scheduled` re-enters same guardrails before firing (§3.11); `reanalyze_decision` for stale `decision_expires_at` (§3.13). Attribution `backend/app/pipeline/attribution.py:32` implements proof chain: `within_window = now-created ≤ window && amount ≥ obligation && status∉{failed,closed}`, `UNIQUE payment_id` idempotency, `within_window` stored not hidden, `mark_expired` distinct terminal.
-- **Webhooks `backend/app/webhooks/webhook.py:49`** — Order `verify_signature→validate_json→deduplicate→persist→process→mark` per §3.6; `verify_webhook_signature` HMAC-SHA256 raw body, bypass only if no `webhook_secret` (synthetic dev); `try_insert_webhook` bumps `attempt_count` on duplicate; routes `payment.failed`→`_handle_payment_failed`, `subscription.pending/halted`→`_handle_subscription_state_event`, `payment_link.paid/expired/cancelled/partially_paid`→`attribution`; handles synthetic flat payloads + Razorpay envelope `payload.payment.entity`. `scheduler.py:19` in-process `run_scheduler_loop` every 30s, survives exceptions, calls `process_due_scheduled_attempts`.
-- **Approvals `backend/app/services/approvals.py:23`** — State machine `pending→approved→executing→executed` (+`denied/expired/execution_failed`), atomic `set_approval_status … WHERE status=? rowcount==1` prevents double execution (§3.12), `enqueue` populates `ai_summary`, `approve` checks `decision_expires_at` staleness → `expired` + requeue `analyzing`, revalidates fresh guardrails, `deny`→`failed`, `expire_stale` TTL sweep.
-- **Agent AI layer `backend/app/services/ai_service.py:54`, `agent_service.py:169`, `agent/tools.py:145`, `agent/loop.py:20`, `domain/guardrails.py`** — `call_claude` never raises, returns `AIResult` fallback, swappable provider via `_get_client` (C2); 6 bounded tools (`get_customer_history`, `classify_cause`, `check_guardrails`, `create_payment_link`, `trigger_retry`, `escalate_to_human`) enforce whitelist+guardrails inside Python (C4), one-commit `ctx[chosen]` guard, `run_agent_for_event` bounded by `max_agent_steps=6 / tool_calls=6 / wall 15s`, always resolves to `force_escalate` not stuck; deterministic fallback when `!is_live||!ai_configured`.
-- **Batch & Simulation `backend/app/batch/batch_runner.py:68`, `synthetic_generator.py:49`** — Reproducible `generate_events` weighted types/codes, `random_seed` deterministic, `run_batch` baseline (pure computation `_ORGANIC_RECOVERY_PROB`) vs treatment (real pipeline + `_MECHANISM_UPLIFT` outcome draw via `f"{seed}:{event_id}"`), stores `simulation_run_id/dataset_version/agent_version/policy_version`, label honest `MODELED_LIFT_LABEL` per §3.14; 10-event uniform audit trail (6 audit rows/event, exactly-one outcome) verified and `test_pipeline_integration.py` passing.
+- **Scaffold/config/auth** `main.py`, `config.py`, `deps.py` — lifespan seeds + optional scheduler; `/health` no-auth; single `X-API-Key` on all `/api/*`. ✅
+- **DB layer** `db.py`, `schema.sql` — all §3.16 tables, parameterized SQL only, WAL, thread-local conn; idempotent seed (`seed.py`). ✅
+- **Domain** `cause_analysis.py`, `decision_engine.py` (whitelist + risk tiers + confidence bands), `guardrails.py` (window/retries/cooldown/caps/autonomous ceiling), `subscription_lifecycle.py` (§3.3 matrix). Rule-table rows unit-tested. ✅
+- **Pipeline** `pipeline.py` — uniform 6-stage audit per event (integration-tested: exactly 6 rows, exactly 1 outcome, every event leaves `detected`); scheduled revalidation re-enters full guardrails (§3.11); stale-decision re-analysis for approvals (§3.13). ✅
+- **Attribution** `attribution.py` — chain events→decisions→attempts→recovered_payments; window+amount rules stored honestly; `UNIQUE(payment_id)` idempotency proven by webhook-replay test. ✅
+- **Approvals** atomic `rowcount==1` claims; double-approve/deny → 409 (tested). ✅
+- **Scheduler** due-attempt revalidation + stale `waiting_for_outcome` sweep + approval TTL sweep. ✅
+- **Webhooks** verify→validate→dedup→persist→process→mark order; both Razorpay envelope and flat synthetic payloads accepted; dedup by `(merchant, razorpay_event_id)` with replay returning exactly `{"status":"duplicate"}`. ✅
+- **Batch/simulation** reproducible seeded generator; monotonic modeled-lift comparison with honest label; runs persisted. ✅
 
-### Frontend — What Exists Is Polished & Contract-Aware
+### Frontend — contract-aware dashboard
 
-- **Scaffold `frontend/app/layout.tsx`, `components.json`, `package.json:11`** — Next 16.3.2 + App Router, TS strict, Tailwind 4, shadcn/ui (`radix-ui`), `tw-animate`, `next-themes`, `sonner`; `lib/api.ts:13` single `fetch` client (`API_BASE_URL` env + `X-API-Key`, centralized `ApiError`), `downloadExport` for CSV/JSON; `hooks/api.ts:1` TanStack Query hooks with correct polling (`POLL_INTERVAL_MS 15s`, `ACTIVE_EVENT_POLL_MS 5s`), `keepPreviousData`, `queryKeys` per endpoint — matches B2/B3 spec.
-- **App shell `frontend/app/(dashboard)/layout.tsx:4`, `components/dashboard/app-sidebar.tsx:5`, `app-header.tsx:15`, `nav-links.tsx:10`** — Sidebar hidden→drawer on mobile (`Sheet`), active state prefix-match, top header shows `Demo Mode·Synthetic` vs `Live·Test Mode` (`/health`) + `Agent Active/Deterministic` tooltips, all accessible/semantic.
-- **Homepage `frontend/app/page.tsx:15`** — Complete marketing page: `SiteNav` (fixed outside `<main>` to avoid clipping), `Hero`, `RecoveryPipelineDiagram`, `SpotlightCards`, `IntegrationCarousel`, `ProductHighlights`, `DecisionContext`, `BoundedAutonomy`, final CTA → `/dashboard`, `Footer` — per `frontend-implementation.txt` premium SaaS design, no random gradients/blob abuse.
-- **Dashboard overview `frontend/app/(dashboard)/dashboard/page.tsx:20`** — 4 `MetricCard`s (Revenue at Risk/Recovered/Recovery Rate/Actions Executed), `RevenueTrendChart` (merged `recovered+at_risk` timeseries) + `StrategyBreakdownChart` (donut) + `RecentEvents` (reuse `EventTable`), `RangeToggle 7/30/90d`, proper `ErrorState`/`LoadingState` per B4.
-- **Events `frontend/app/(dashboard)/events/events-client.tsx:20`, `components/events/event-table.tsx:1`** — URL-param filters (`status`/`cause`/`page`), shareable via `searchParams`, `EventsToolbar` + `Pagination` (page_size 20), table columns exactly spec (Event/Customer/Source/Cause/Amount/Confidence/Action/Status/Detected), `ConfidenceBadge`/`StatusBadge` with risk color, row→`/events/[eventId]`, `Empty/Loading/Error` all present.
-- **Event detail `frontend/app/(dashboard)/events/[eventId]/event-detail-client.tsx:36`** — Summary grid (customer/subscription/amount/type/cause/error_code/state_before/after/origin/recovered/restored/payment_id), `Latest Decision` card, `Recovery Attempts` table (9 cols, mechanism labels, dry_run/live), `Tabs: AuditTrail (AuditTimeline)` + `RawLog (RawLogPanel)` with collapsible JSON, copy-button, all `formatINR`/`formatDateTime` correct.
-- **Settings `frontend/app/(dashboard)/settings/page.tsx:10`, `components/settings/guardrail-form.tsx:31`, `pending-approvals-list.tsx:24`** — `Tabs: Pending Approvals (badge count) / Guardrails`; guardrail form full coverage of `guardrail_config` fields (environment select, high/low sliders with validation `low<high`, retries/cooldown/window number inputs, caps in ₹ (paise/100), `KNOWN_CHANNELS` toggles + `DISABLED_CHANNELS whatsapp/voice` visibly `Not yet integrated` per A1), `Save` dirty-check + toast, production alert; approvals list renders `reason/ai_summary`, `Bot` badge, `Approve/Deny` dialogs with atomic conflict handling.
-- **Reports `frontend/app/(dashboard)/reports/page.tsx:33`** — Batch runner: inputs `n_events/random_seed/dry_run/use_ai`, warning when `use_ai && !ai_configured`, `useRunBatch` invalidates summary/timeseries, `ResultColumn` baseline vs treatment, lift `+paise/+count/+points`, `executed/scheduled/pending_approval/expired/events` grid, honest `label` display + `AI-assisted/Deterministic + Dry run/Live` meta.
-- **Shared components** — `StatusBadge`, `ConfidenceBadge`, `MetricCard`, `PageHeader`, `states.tsx` (Loading/Error/Empty), `lib/formatters.ts` `formatINR` with `₹`/`en-IN` + compact `K/L/Cr`, `lib/types.ts` field-for-field mirroring `enums.py`/`schemas.py` with documented caveats (`latest_*` null together, raw-log 0/1 booleans).
+- All B0 routes exist and compile: `/`, `/dashboard`, `/events`, `/events/[eventId]`, `/recoveries`, `/customers`, `/strategies`, `/audit-trail`, `/reports`, `/settings`, `/privacy`, `/terms`.
+- Data layer typed against real backend schemas; TanStack Query polling at spec intervals; URL-param event filters; loading/error/empty states everywhere; approvals dialog with 409 handling; honest reports screen.
+- Build: `next build` clean (Turbopack, TS strict). ✅
 
 ---
 
-## 2. Partially Completed / Needs Improvement
+## 2. Fixed in this pass (newly found issues, each verified by regression test or E2E check)
 
-| Area | File(s) | Current Status | Impact | Exact Next Action |
-|------|---------|----------------|--------|-------------------|
-| **Summary delta vs previous window** | `backend/app/api/routes.py:37` `summary` vs `implementation.txt A1` spec `deltas_vs_previous` | Returns only `range_days/recovery_rate` single window; spec expected `previous` window pct deltas. Frontend `SummaryResponse` even documents "no delta from backend" `lib/types.ts:292`. | Dashboard cannot show trend arrows/pct vs last period required by A1. | Add `since_prev = now-2*range` branch in `summary_metrics` query; compute `delta_recovery_rate`, `delta_revenue_at_risk` and extend `schemas.SummaryOut` + `formatDelta` already exists. Update test expectation `recovery_rate_pct` vs `recovery_rate` consistency. |
-| **Timeseries granularity** | `routes.py:45` `get_timeseries(metric)` vs spec `?granularity=day` | Single-metric per call (`recovered` xor `at_risk`), no `granularity` param, no combined series server-side. Frontend works around via `fetchCombinedTimeseries` 2 parallel calls `hooks/api.ts:81`. | Double request per chart, no weekly rollup for 90d view. | Add `granularity=day\|week` enum and optional `metric=all` returning `{recovered[], at_risk[]}` or implement daily aggregation server-side to avoid client merge. |
-| **Events export limits & auth** | `routes.py:98` `limit 10_000 offset 0` | Hard-coded 10k cap, no pagination continuation, no `cause` filter passed through from toolbar (status only). | Large merchants silently truncate export; UX misleading. | Accept `cause`+`page_size` params, stream CSV via generator instead of `io.StringIO` full buffer, add `Content-Length` and guard `MAX_EXPORT=50000`. |
-| **Guardrail hard caps vs UI ranges** | `seed.py:30` `daily_recovery_value_cap=5Cr` vs `config.py:50` runtime `scheduler_poll 30s` | DB default hugely permissive vs `guardrails.py` `effective_max_retries = min(cfg, settings.max_recovery_attempts=3)` — UI can set `max_retries 4` but silently clamped to 3 server-side; no warning returned. | Operator thinks cap 4 is active, it isn't. | Return `effective_max_retries` or warning in `GuardrailResult`/`PUT` response; surface in `GuardrailForm` hint text "system ceiling 3 attempts". |
-| **Agent loop legacy dual implementation** | `backend/app/agent/*` vs `backend/app/services/agent_service.py` | Two agent stacks coexist: new `services/agent_service.py` (used by pipeline `pipeline.py:59`) and legacy `agent/tools.py+loop.py+ai_service.py` (never wired, still imported by legacy tests). Legacy `CAUSE_CONFIDENCE/ACTION_MECHANISM` refs missing (would error if invoked). | Dead code confusion, DRY violation, risk of invoking wrong stack. | Delete or re-export `backend/app/agent/` legacy module, keep single source `services/agent_service.py` + `services/ai_service.py`; add deprecation shim or update `BACKEND_ANALYSIS.md` which still documents old paths. |
-| **Scheduler persistence gap** | `backend/app/pipeline/scheduler.py:33` `process_due_scheduled_attempts` + `db.py:494` | Only handles `scheduled` attempts whose `scheduled_for ≤ now`; does not expire stale `awaiting_outcome` attempts past recovery window nor stale approvals — `BACKEND_ANALYSIS.md` claimed it did but current `scheduler.py` only does due scheduled. `attribution.mark_expired` only called from pipeline guardrail path. | Old `awaiting_outcome` rows never transition to `expired` unless polled via webhook; dashboard shows indefinitely pending. | Re-add `expire_stale_attempts(merchant_id)` + `approvals.expire_stale()` inside `scheduler.py.tick` (as documented in `BACKEND_ANALYSIS.md:332`) or document intentional omission. |
-| **Frontend missing pages (nav exists, routes don't)** | `frontend/app/(dashboard)/` has only `dashboard/events/reports/settings`, but `components/dashboard/nav-items.ts:19` lists 8: `Recoveries/Customers/Strategies/Audit Trail` | Clicking those nav items = Next 404. No `app/(dashboard)/recoveries\|customers\|strategies\|audit-trail/page.tsx` files exist. `hooks/api.ts:98` even implements `fetchRecoveries`/`fetchCustomers`/`fetchGlobalAudit`/`fetchStrategies` with polling but never rendered. | 50% of B0 page list unroutable, breaks product story "operational customer/strategy/audit screens". | Create the four missing route files reusing existing components: `recoveries` → `EventTable` filtered `ACTIVE_EVENT_STATUSES`, `customers` → `useCustomers` table, `strategies` → `useStrategies` performance table, `audit-trail` → `useGlobalAudit` list per B0. Estimated <200 LOC each. |
-| **API key exposed to browser** | `frontend/lib/config.ts:8` `NEXT_PUBLIC_API_KEY=reviveo-dev-key` | Hackathon-scope single `X-API-Key` sent from browser as documented `A4`, but no rotation/role scope; key committed in `config.py:26` default and `tests/test_api.py:16`. | Acceptable for demo, not production; leaks in JS bundle. | Keep for demo but add comment re CORS+HTTPS only + plan to replace with JWT/merchant-scoped tokens post-hackathon; don't commit real secret. |
+| # | Severity | Issue | Fix | Verification |
+|---|----------|-------|-----|--------------|
+| 1 | 🔴 High | **Out-of-order outcome webhooks could regress terminal states**: a late `payment_link.expired`/`cancelled` flipped an already-`recovered` event back to `expired` (direct `db.update_event` bypassing §3.5 precedence) | `webhooks/webhook.py` now short-circuits late expiry/cancel/partial outcomes for terminal events (`{"status":"ignored_terminal"}`) | New test `test_late_link_expiry_cannot_regress_recovered_event` + E2E check |
+| 2 | 🟠 Medium | **Attribution closed-over-recovered regression**: a second attempt paying short/late after a first success moved the event `recovered → closed` | `attribution.py` skips the status write when the event is already `recovered` | New test `test_short_late_payment_does_not_close_a_recovered_event` |
+| 3 | 🟠 Medium | **Webhook trusted caller-supplied `merchant_id`** from the JSON body — forged payloads could file events under another merchant namespace | `_handle_payment_failed` forces server-side `settings.default_merchant_id` (§3.15 scoping) | New test `test_flat_payload_merchant_id_is_not_trusted` |
+| 4 | 🟠 Medium | **`subscription_state_before/after` never recorded anywhere** despite §3.16 columns existing; lifecycle transitions invisible on dashboards | Subscription-state webhook captures pre-update state and writes before/after; `pipeline.py` no longer overwrites the ingest-time before-state (decision still uses live state) | New test `test_subscription_state_event_records_before_and_after` |
+| 5 | 🟠 Medium | **Approval execution could strand state**: a raised error mid-execution left the approval stuck `executing` forever (500, no recovery path); approvals for already-terminal events executed anyway | `routes.approve_approval`: terminal-event guard returns `execution_failed` + audit row; whole execution wrapped so failures mark `execution_failed` instead of hanging | Code-traced; covered by existing 409/approval tests staying green |
+| 6 | 🟡 Medium | **Expired TTL approvals orphaned their events in `analyzing`** — nothing ever re-processes that status (no queue exists, §0), leaving invisible limbo rows | `approvals.expire_stale()` + stale branch now move events to visible terminal `escalated` with an audit entry | Code-traced; suite green |
+| 7 | 🟡 Medium | **Frontend type drift vs backend contract** (stale comments claiming fields "not on the wire" that now are): missing `reference_id` (attempts), `decisions[]` (detail), `effective_max_retries` (guardrails), `ok` (approval actions), `delta_*_pct` + `recovery_rate_pct` (summary) | `lib/types.ts` synced field-for-field; misleading comments corrected | `tsc` strict build clean |
+| 8 | 🟡 Medium | **Global audit pagination broken**: hook discarded the backend `{items,total}` wrapper, so the page used `length===pageSize` inference — wrong page counts whenever a page was exactly full | `useGlobalAudit` now surfaces `{items,total}`; page uses real total; legacy bare-array fallback retained | E2E check `global audit wrapped w/ total` |
+| 9 | 🟡 Low | **Dashboard deltas computed but never rendered** — backend sends `delta_*_pct`, `MetricCard` supports `deltaPct`, page passed neither; `formatDelta` was dead code | Wired `deltaPct` (+ good-direction) into Revenue at Risk / Recovered / Recovery Rate cards | Build clean; visual check |
+| 10 | 🟡 Low | **Guardrail clamp invisible in UI**: merchant can set retries 4–10 but system enforces ≤3 silently (backend already returned `effective_max_retries`; frontend ignored it) | Form shows amber warning when configured > effective ceiling | Build clean |
+| 11 | 🟡 Low | **Events export dropped the cause filter** the toolbar offers; detail table's "Reference" column showed Razorpay's `plink_…` instead of the §3.7 correlation key `rvo_…` | `downloadExport` passes `cause`; reference column prefers `reference_id` | Manual trace |
+| 12 | 🟢 Low | Dead/misleading code: unused `OutcomeStatus` enum; `fetch_payment_link` docstring falsely claimed scheduler usage; `approvals.py` module docstring claimed pipeline inserts were migrated to `enqueue` (they are not — documented accurately now); unreadable triple-query scheduler sweep expression rewritten (same behavior) | Removed/rewritten | Suite green |
 
----
-
-## 3. Not Implemented / Remaining (vs `implementation.txt` §A1/B0/B7 and `frontend-implementation.txt`)
-
-| Requirement | Expected | Actual Location | Status | Impact | Next Action |
-|-------------|----------|-----------------|--------|--------|-------------|
-| **Demo inject event endpoint** | `POST /api/demo/inject-event` (synthetic only, 403 in live) `status.md:27` says done, tests `test_api.py:33` expect `{"ingested": event_id}` | `backend/app/api/routes.py:1-354` — no such route registered; grep found zero `inject-event` | **Not implemented** (code & test diverge) | All 7 failing tests block; frontend demo injection (documented in `status.md:59` curl) doesn't exist; cannot run live synthetic flow without batch runner. | Add router `@router.post("/demo/inject-event")` that validates `EventType`, builds `event` dict (`type/customer_id/subscription_id/error_code/amount_paise/origin=synthetic/status=detected`), calls `db.insert_event` + `pipeline.process_event`, returns `{"ingested": event_id, "result": result}`. Gate `if settings.is_live: raise 403`. Mirror expected test schema. |
-| **Batch/report API contract alignment** | Tests expect `POST /api/batch/run {n_events, seed}` → `{n_events, statuses}` and `POST /api/reports/simulate {n_events, seed}` → `{label, baseline, treatment}` | Actual: `routes.py:335` `POST /api/batch/run` (body `n_events,dry_run,use_ai,random_seed` → `BatchRunOut` baseline/treatment), `GET /api/batch/last-summary`; no `/api/reports/simulate` at all | **Contract mismatch** | `test_batch_run_and_last_summary` + `test_reports_simulation_labels_are_honest` fail; frontend `ReportsPage` calls correct `/api/batch/run` (works) but tests/docs claim `/reports/simulate` which 404s. | Either update tests to new contract (`random_seed`, `baseline/treatment`) and add alias route `POST /api/reports/simulate` → `batch_runner.run_batch(...)` with compatibility params, or keep both: add `router.post("/reports/simulate")` delegating to same runner. |
-| **Customers list/detail deep view** | `GET /api/customers/{id}` returns profile+subscriptions+50 recent events `status.md` | Actual `routes.py:183` returns `CustomerOut` only (no subs/events). Frontend `types.ts:222` notes "no customer-detail endpoint" and doesn't attempt it. | **Partially not implemented** | `/customers` spec promise of drill-down unmet; merchant can't see customer's recovery history/context. | Extend `get_customer_route` to `include=subs+events` query param or new `GET /api/customers/{id}/detail` joining `subscriptions` + `events WHERE customer_id ORDER BY created_at DESC LIMIT 50`. Frontend detail page missing anyway (see above). |
-| **Strategies vs Strategy-breakdown duplication** | `GET /api/strategies` + `GET /api/summary/strategy-breakdown` both exist but spec `A1` expected per-strategy success + `avg_recovery_time` | Actual both delegate to same `db.strategy_breakdown` without avg time; no distinction. | **Missing `average_recovery_time`** | Cannot display strategy SLA. | Add `recovered_payments.recovered_at - events.created_at` AVG to `strategy_breakdown` query where `within_window=1`. |
-| **Communications page** | `frontend-implementation.txt B0: /communications only if time permits` | No file `app/(dashboard)/communications/**` | **Intentionally deferred** per doc — not a blocker. | None for MVP. | Leave deferred; remove from nav or label "Coming soon" if time remains. |
-| **Global audit pagination total** | `GET /api/audit-trail?page=&page_size=` expected paginated with total | Actual `routes.py:159` returns bare `list[AuditEntryOut]`, no wrapper. Frontend `types.ts:124` documents "no pagination wrapper, no total" and infers `hasNext = len===pageSize`. | **Spec deviation documented and worked around** | OK for demo but imprecise page controls. | Acceptable; optionally add `X-Total-Count` header or wrapper `{"items":..., "total":...}` later. |
-| **Frontend build-order steps 9-10 design polish** | `frontend-implementation.txt:10` public homepage final responsive/design pass, `B7 deployment` Vercel env `NEXT_PUBLIC_API_URL` | Homepage exists polished; `.next/` build artifacts present; `next.config.ts` correct; but no `vercel.json`/`Dockerfile`/`Render` deployment config checked in. `README` says "Backend→Render/Railway, Frontend→Vercel" but no infra files. | **Not implemented** | Manual deploy steps not codified. | Add `vercel.json` + document `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_API_KEY` env wiring; not code-blocker for local demo. |
-| **Real Razorpay live checkout/subscription flow for single success story** | `implementation.txt §3.3` requires one live Razorpay test-mode payment_failed→payment_link→paid chain to prove not-mock. `webhook.py:15` docstring admits "live demo path centers on payment.failed + Payment Link outcomes (small live flow); full Subscriptions/Checkout larger project out of MVP". | Synthetic `plink_synthetic_*` path fully wired; live path `razorpay_service.py:84-108` builds real `client.payment_link.create` only if `is_live&&razorpay_configured`. Tested synthetic only. | **Live path coded but unexercised** | Credibility risk in panel — no `ngrok`+real webhook demo recorded. | With `RUN_MODE=live` + Razorpay test keys, run one `payment.failed` via Dashboard injection or Razorpay dashboard test checkout, confirm `payment_link.paid` webhook → `recovered`. Keep synthetic as primary demo. |
+**Carried over from the previous pass (verified present and working):** demo inject endpoint, `/api/reports/simulate` alias, flat-webhook fallback, origin filters on summary/timeseries/events APIs, wrapped audit/pending-approvals contracts, 4 formerly-missing frontend routes, agent double-stack consolidation shims.
 
 ---
 
-## 4. Bugs or Production Blockers (by severity)
+## 3. Not resolved here (fully specified in `TODO.md`)
 
-### 🔴 Blocker — API Contract Drift (breaks frontend↔backend + all contract tests)
-
-- **Evidence:** `pytest -q` 7/57 failed. `routes.py:22` `GET /api/summary` returns `recovery_rate` (0..1 fraction) `schemas.py:85`, but `tests/test_api.py:41` asserts `"recovery_rate_pct" in s` — key renamed without test update. `GET /api/guardrails/pending-approvals` returns `list[PendingApprovalOut]` `routes.py:218`, but `tests/test_api.py:92` expects `pending["items"]` paginated wrapper → `TypeError: list indices must be integers`. `GET /api/events/{id}` returns `EventDetailOut` with `attempts` only, but test `test_api.py:48` asserts `detail["decisions"]` and `detail["attempts"]` + `trail["stages"]` (actual `list[AuditEntryOut]` not `{"stages":...}`).
-  - **Impact:** Any frontend code following test contract (or docs `implementation.txt A1`) will break; `hooks/api.ts` correctly follows **actual** routes so local demo works, but CI fails.
-  - **Next action:** Choose single contract and fix the other side. Recommended: keep current `routes.py` schemas (cleaner) and update `tests/test_api.py:41` to `recovery_rate`, `:53` to iterate `trail` list not `trail["stages"]`, `:88-109` to handle bare list or add wrapper `{"items":..., "total": len(...)}` consistently. Ensure `GET /api/events/{id}/raw-log` remains debug-only; don't leak it into `EventDetail`.
-
-### 🔴 Blocker — Missing `POST /api/demo/inject-event` (documented as done, actually absent)
-
-- **Evidence:** `status.md:27` `[x] REST API — demo inject-event`, `tests/test_api.py:33` `client.post("/api/demo/inject-event"... )` 404s (verified via `grep -rn inject` zero hits in `backend/app`). The 7 failures cascade from this.
-  - **Impact:** No way to create single event without batch runner; `status.md` demo curl `{"type":"payment_failed"...}` fails; panel story "Rahul ₹2,499 fails → webhook → recovery" cannot be triggered manually.
-  - **Next action:** Implement as described in §3 above (6 lines + validation). Add matching frontend hook if desired (`useInjectEvent` mutation) and wire to a hidden dev button or keep CLI `batch_runner` as workaround.
-
-### 🔴 Blocker — Frontend nav 404s (4 routes missing)
-
-- **Evidence:** `frontend/app/(dashboard)/` directory listing shows only `dashboard/events/reports/settings`. `components/dashboard/nav-items.ts:19` advertises 8 items including `Recoveries/Customers/Strategies/Audit Trail`. No corresponding `page.tsx`.
-  - **Impact:** 404 on click; violates B0 "9 pages" requirement; `hooks/api.ts` already implements `fetchRecoveries/fetchCustomers/fetchGlobalAudit/fetchStrategies` so data fetch is ready but no route renders it.
-  - **Next action:** Create the four missing route files per §2; reuse `EventTable`/`useCustomers` etc. Add minimal `loading/error/empty` states (already patterns exist).
-
-### 🟠 High — Webhook payload shape mismatch with tests & potential live payload
-
-- **Evidence:** `webhooks/webhook.py:49` `razorpay_webhook(request)` reads `payload.get("event","")` and `payload.payload.payment.entity` (Razorpay envelope) and `x-razorpay-event-id` header. Tests `test_api.py:117` send flat `{"id":"wh_test_42","event":"payment.failed","type":"payment_failed"}` with no `payload` envelope, no header — first call currently returns `unhandled event type` silently (`_route_event` logs but doesn't insert event), so `test_webhook_processes_and_deduplicates` expecting `processed|scheduled|approval_pending` fails.
-  - **Impact:** Live Razorpay will send envelope, so live works; but synthetic `webhooks/razorpay` test helpers & any direct `curl` with flat JSON silently no-ops. `test_outcome_webhook_recovers` expects `{"status":"outcome_applied","paid":true}` but actual returns `{"status":"ok"}`.
-  - **Next action:** Make `_route_event` accept both shapes: if `payload.get("payload")` missing, treat `payload` itself as entity (fallback for tests/synthetic callers). Adjust outcome response to include `{"outcome_applied":..., "paid": bool}` when `payment_link.paid` processed, or update tests to send envelope shape.
-
-### 🟠 High — Synthetic `verify_webhook_signature` bypass is global
-
-- **Evidence:** `services/razorpay_service.py:124` `if not settings.razorpay_webhook_secret: return True` — in `synthetic` mode any caller can POST to `/webhooks/razorpay` and it passes.
-  - **Impact:** OK for hackathon local dev, but if deployed synthetic without secret, ` /webhooks/razorpay` is unauthenticated open ingestion. `deps.require_api_key` intentionally not on webhooks (HMAC instead).
-  - **Next action:** In production (`environment=production` guardrail) enforce `razorpay_webhook_secret` required or return 401; document that synthetic deploy should still set a dummy secret or gate by `RUN_MODE`.
-
-### 🟡 Medium — Hardcoded demo data leaks into "production" views
-
-- **Evidence:** Synthetic events from `batch_runner.py:163` use same `customers` table as live; `synthetic_generator.py:83` `origin="synthetic"` is stored but `GET /api/events` has no `origin` filter, and `summary_metrics` sums `events WHERE created_at ≥ since` without `origin` filter — synthetic batch inflates `revenue_at_risk`. Frontend has no "Synthetic/Live" toggle per §3.14 `Keep synthetic and live_test_mode explicitly separate`.
-  - **Impact:** Metrics honesty: headline numbers include demo batch traffic; violates §3.14 separation principle even though per-row `origin` is stored.
-  - **Next action:** Add `?origin=live_test_mode|synthetic|all` filter to `summary/events/timeseries` (default `all` for demo, `live_test_mode` for panel). Frontend `RangeToggle` add origin select, or at least badge counts.
-
-### 🟡 Medium — Next/font placeholder leak not app bug (false positive)
-
-- **Evidence:** `grep` found `placeholder`/`lorem` exclusively inside `node_modules/next/dist` `@radix-ui` types — zero app-source `TODO/FIXME/lorem` in `frontend/app|components|lib|hooks` or `backend/app`.
-  - **Impact:** None.
-
-### 🟢 Low — Minor inconsistencies already handled as documented caveats
-
-- `lib/types.ts:292` deliberately documents `recovery_rate` 0..1 not pct; `Paginated` vs bare-list audit trail documented with `hasNext = len===pageSize` inference; `Allowed channels` UI shows disabled `whatsapp/voice` as not-wired — all honest, not bugs.
+1. **Live Razorpay success story** — coded, unexercised (needs test keys + ngrok).
+2. **Live Claude agentic integration proof** — needs `ANTHROPIC_API_KEY`; deterministic fallback always available and audited.
+3. **Origin toggle in the UI** — backend `?origin=` exists; frontend surface pending.
+4. **Strategy `average_recovery_time`** — query extension specified step-by-step.
+5. **Customer drill-down page** — needs small backend `?customer_id=` filter + new route.
+6. **Deployment infra files** (render.yaml / vercel.json / Dockerfile).
+7. **Multi-merchant auth** — data model ready; auth plumbing is post-hackathon scope.
+8. **Communications page** — explicitly deferred by spec ("only if time permits").
+9. **Accepted limitations:** shared daily counters across origins; `subscription_restored` stays 0 without real subscription flows; `executing` status unused vocabulary; HMAC bypass when no secret configured (startup warning added this pass).
 
 ---
 
-## 5. Cross-Verification Summary Table
+## 4. Cross-Verification Summary
 
-| Check | Expected | Found | Verdict |
-|-------|----------|-------|---------|
-| `schema.sql` 13 tables per §3.16 | 13 | 14 incl. `merchants` (15 incl. `daily_counters/simulation_runs`) indexes 6 | ✅ |
-| State machine rank+terminal | `STATUS_RANK` + `is_terminal` | `enums.py:32` present, `pipeline/state_machine.py:16` forward-only | ✅ |
-| Recovery attribution uniqueness | `UNIQUE(payment_id)` + `within_window` stored | `schema.sql:123` + `attribution.py:58` | ✅ |
-| Razorpay `reference_id` 40-char | Truncated `[:40]` | `razorpay_service.py:66` OK | ✅ |
-| Frontend polling 15-30s / detail 5s | Config `POLL_INTERVAL_MS/ACTIVE_EVENT_POLL_MS` | `lib/config.ts:10` 15s/5s | ✅ |
-| Shadcn functional-before-styled | Installed `components/ui/*` | Present, unstyled-first OK | ✅ |
-| Tests `pytest -q` | 51 passing claimed | 50 passed, 7 failed (contract drift) | ⚠️ |
-| Build artefact hygiene | `.venv / .next / reviveo.db` gitignored | `.gitignore` covers `backend/.venv, __pycache__, reviveo.db`, `frontend/node_modules/.next` | ✅ |
+| Check | Result |
+|-------|--------|
+| Backend `pytest -q` | ✅ **61 passed, 0 failed** (57 prior + 4 new out-of-order/scoping regressions) |
+| Frontend `npm run build` | ✅ Compiled successfully, TypeScript finished, 14 routes |
+| Scripted E2E (16 checks) | ✅ ALL PASS — inject→auto-execute, summary deltas, detail contract (`attempts`+`decisions`+`reference_id`), wrapped audit shapes w/ real totals, deny→escalated + 409, paid-outcome attribution, late-expiry protection, dedup replay, customer totals, batch/simulate aliases, guardrail clamp surfacing, export cause filter |
+| State-machine guarantees (§3.5) | ✅ forward-only ranks + terminal→closed only; webhook paths now respect it |
+| Money-safety invariants (§3.1/§3.7) | ✅ UNIQUE(attempt_number), UNIQUE(payment_id) idempotency, reference_id/notes correlation |
+| Secrets hygiene | ✅ no real secrets committed; `.env.example` placeholders only |
 
----
-
-## 6. Prioritized Fix Checklist
-
-1. **Add `POST /api/demo/inject-event`** (`routes.py`) — unblocks 3 tests + manual demo — 1 hr.
-2. **Align `pending-approvals` + `summary` + `events/{id}` contracts** (`routes.py` ↔ `tests/test_api.py`) — unblocks remaining 4 tests — 1 hr.
-3. **Create 4 missing frontend routes** (`recoveries/customers/strategies/audit-trail`) reusing existing hooks — 2 hrs.
-4. **Add alias `POST /api/reports/simulate`** delegating to `batch_runner` — fixes honest-label test — 15 min.
-5. **Make `webhooks/webhook.py` accept flat synthetic payload fallback + return `outcome_applied`** — fixes webhook deduplication tests — 30 min.
-6. **Filter `origin` in summary/timeseries** or document batch synthetic separation — honesty per §3.14 — 30 min.
-7. **Dedup agent double-stack** (`services/agent_service.py` canonical) — remove legacy `agent/*` — 1 hr.
-
-**Overall assessment:** Backend deterministic core, safety, and recovery attribution are **production-grade for hackathon scope** with honest `dry_run`/`live_call` separation and full auditability. Frontend dashboard shell, homepage, and 5 critical screens are polished and correctly typed against real backend contracts. Primary remaining work is **contract alignment + 4 missing routes + demo endpoint**, not architectural rework — estimated 6-8 focused hours to green.
-
----
-
-*Generated via independent codebase inspection — every claim references `file_path:line_number` or `pytest` output. No assumptions, no predefined checklist.*
+**Overall assessment:** The core loop — detect → analyze → decide → guardrail → execute/approve → outcome → attribute — is correct, guarded against out-of-order/stale input, fully audited, and demonstrably matched end-to-end by the frontend. Remaining work is external-proof (live keys), polish (origin toggle, avg recovery time), and deployment plumbing, all specified in `TODO.md`.

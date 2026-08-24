@@ -134,14 +134,6 @@ class ApprovalStatus(str, Enum):
     execution_failed = "execution_failed"
 
 
-class OutcomeStatus(str, Enum):
-    pending = "pending"
-    recovered = "recovered"
-    expired = "expired"
-    failed = "failed"
-    escalated = "escalated"
-
-
 class ExecutionMode(str, Enum):
     dry_run = "dry_run"
     live_call = "live_call"

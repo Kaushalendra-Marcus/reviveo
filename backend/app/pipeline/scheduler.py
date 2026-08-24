@@ -53,11 +53,9 @@ def process_due_scheduled_attempts(merchant_id: str | None = None) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=cfg["recovery_window_days"])).isoformat()
         for ev in db.stale_waiting_events(merchant_id, cutoff):
             db.update_event(ev["event_id"], status="expired")
-            db.update_recovery_attempt(
-                db.list_attempts_for_event(ev["event_id"])[-1]["recovery_attempt_id"]
-                if db.list_attempts_for_event(ev["event_id"]) else "",
-                status="expired",
-            ) if db.list_attempts_for_event(ev["event_id"]) else None
+            attempts = db.list_attempts_for_event(ev["event_id"])
+            if attempts:
+                db.update_recovery_attempt(attempts[-1]["recovery_attempt_id"], status="expired")
             db.insert_audit({
                 "event_id": ev["event_id"], "merchant_id": merchant_id,
                 "stage": "outcome", "message": "Expired via scheduler sweep (no outcome within window)",

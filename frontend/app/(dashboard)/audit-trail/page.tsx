@@ -18,10 +18,8 @@ const PAGE_SIZE = 50;
 export default function AuditTrailPage() {
   const [page, setPage] = useState(1);
   const { data, isLoading, isError, refetch } = useGlobalAudit(page, PAGE_SIZE);
-  // hooks/api.ts useGlobalAudit now unwraps PaginatedAudit.items for backward compat,
-  // but we also support the wrapped shape directly if the API returns it.
-  const items = Array.isArray(data) ? data : (data as unknown as { items: typeof data })?.items ?? data;
-  const total = Array.isArray(data) ? (data as unknown[]).length : (data as unknown as { total?: number })?.total ?? PAGE_SIZE;
+  const items = data?.items ?? [];
+  const total = data?.total ?? 0;
 
   return (
     <div>
@@ -33,7 +31,7 @@ export default function AuditTrailPage() {
         <LoadingState rows={10} />
       ) : isError ? (
         <ErrorState message="Could not load audit trail." onRetry={() => refetch()} />
-      ) : !items || (Array.isArray(items) && items.length === 0) ? (
+      ) : items.length === 0 ? (
         <EmptyState
           title="No audit entries yet"
           message="Audit entries appear as soon as the pipeline processes an event."
@@ -54,7 +52,7 @@ export default function AuditTrailPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(items as Array<{ id: number; event_id: string; stage: string; message: string | null; ai_used: boolean; created_at: string }>).map(
+                  {items.map(
                     (entry) => (
                       <TableRow key={entry.id} className="border-slate-100">
                         <TableCell className="text-xs text-slate-500">{formatDateTime(entry.created_at)}</TableCell>

@@ -46,7 +46,7 @@ export function EventsToolbar({
 }) {
   async function handleExport(format: "csv" | "json") {
     try {
-      await downloadExport(format, status || undefined);
+      await downloadExport(format, status || undefined, cause || undefined);
     } catch {
       toast.error("Export failed", { description: "Could not reach the Reviveo API." });
     }
