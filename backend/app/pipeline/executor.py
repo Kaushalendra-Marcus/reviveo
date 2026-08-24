@@ -1,5 +1,23 @@
 """Single shared execution path (doc §3.8/§3.11).
 
+AUDIT NOTE (2026-08-24): despite the module docstring below, this is NOT
+the execution path actually used by the live app. The real single shared
+execution path is `services/execution_service.execute_action`, called by
+`pipeline.py`, `services/agent_service.py`, and `api/routes.py`'s
+`approve_approval`. This module's only caller was `services/approvals.py`
+(itself unreachable from any route — see that module's docstring), which
+has been fixed to call `execution_service.execute_action` instead, so
+`execute_decision`/`resume_scheduled_attempt` below are now fully
+unreferenced. They are also independently broken: `execute_decision` calls
+`razorpay_service.send_reminder(...)`, `razorpay_service.manual_charge(...)`,
+and `razorpay_service.monitor_native(...)`, none of which exist on
+`services/razorpay_service.py` (only `create_payment_link`,
+`fetch_payment_link`, and `verify_webhook_signature` are defined there) —
+calling this function would raise `AttributeError` for every mechanism
+except `checkout`/`payment_link`. Left unfixed deliberately: rewriting this
+to be correct would just duplicate `execution_service.py`. Recommended
+action is deletion — see AUDIT_REPORT.md and TODO.md.
+
 Pipeline, approvals, scheduler and agent tools ALL execute through
 `execute_decision` / `resume_scheduled_attempt`. There is no side door around
 policy checks: guardrails run before anything here is called, and this module

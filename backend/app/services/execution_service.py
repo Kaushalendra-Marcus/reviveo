@@ -29,12 +29,13 @@ _CONTACT_ACTIONS = {
 @dataclass(frozen=True)
 class ExecutionResult:
     recovery_attempt_id: str
-    status: str  # 'awaiting_outcome' | 'scheduled'
+    status: str  # 'awaiting_outcome' | 'scheduled' | 'failed'
     execution_mechanism: str
     execution_mode: str
     razorpay_ref: Optional[str]
     short_url: Optional[str]
     scheduled_for: Optional[str]
+    error: Optional[str] = None  # set iff status == 'failed'
 
 
 def execute_action(
@@ -67,6 +68,7 @@ def execute_action(
     scheduled_for: Optional[str] = None
     razorpay_ref: Optional[str] = None
     short_url: Optional[str] = None
+    error_message: Optional[str] = None
     status = "awaiting_outcome"
 
     if action == Action.smart_retry_24h and not immediate:
@@ -93,6 +95,16 @@ def execute_action(
         )
         razorpay_ref = result.razorpay_ref
         short_url = result.short_url
+        if not result.ok:
+            # A live Razorpay call failed (network/API error) — record a real
+            # failed attempt rather than pretending it's awaiting an outcome
+            # that will never arrive (production-readiness fix, 2026-08-24 audit).
+            status = "failed"
+            error_message = result.error
+            logger.warning("execution failed at payment provider", extra={"context": {
+                "event_id": event_id, "recovery_attempt_id": recovery_attempt_id,
+                "mechanism": mechanism.value, "error": error_message,
+            }})
 
     db.insert_recovery_attempt({
         "recovery_attempt_id": recovery_attempt_id,
@@ -113,12 +125,15 @@ def execute_action(
         "scheduled_for": scheduled_for,
     })
 
-    is_contact = action in _CONTACT_ACTIONS
-    db.incr_daily_counter(
-        merchant_id,
-        value_paise=event["amount_paise"],
-        contacts=1 if is_contact else 0,
-    )
+    if status != "failed":
+        # A failed live call never actually reached the customer or put money
+        # at risk, so it must not consume the daily contact/value caps.
+        is_contact = action in _CONTACT_ACTIONS
+        db.incr_daily_counter(
+            merchant_id,
+            value_paise=event["amount_paise"],
+            contacts=1 if is_contact else 0,
+        )
 
     logger.info("action executed", extra={"context": {
         "event_id": event_id, "recovery_attempt_id": recovery_attempt_id,
@@ -130,4 +145,5 @@ def execute_action(
         recovery_attempt_id=recovery_attempt_id, status=status,
         execution_mechanism=mechanism.value, execution_mode=execution_mode,
         razorpay_ref=razorpay_ref, short_url=short_url, scheduled_for=scheduled_for,
+        error=error_message,
     )

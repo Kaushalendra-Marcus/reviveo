@@ -64,13 +64,47 @@ class RecoveryAttemptOut(BaseModel):
     status: str
     execution_mode: str
     razorpay_ref: Optional[str] = None
+    reference_id: Optional[str] = None
     scheduled_for: Optional[str] = None
     created_at: str
     resolved_at: Optional[str] = None
 
 
+class DecisionOut(BaseModel):
+    """One row of an event's full decision history (doc A1 "full record")
+    — EventOut/EventDetailOut's latest_* fields are only the most recent of
+    these, joined for the list view; this is the complete history."""
+    id: int
+    action: str
+    execution_mechanism: Optional[str] = None
+    confidence: float
+    risk_tier: str
+    requires_approval: bool
+    reasoning: Optional[str] = None
+    ai_used: bool
+    policy_version: Optional[str] = None
+    decision_expires_at: Optional[str] = None
+    created_at: str
+
+
 class EventDetailOut(EventOut):
     attempts: list[RecoveryAttemptOut] = Field(default_factory=list)
+    decisions: list[DecisionOut] = Field(default_factory=list)
+
+
+class AuditTrailOut(BaseModel):
+    """GET /api/events/{id}/audit-trail — doc A1 "5-stage timeline shape"."""
+    event_id: str
+    stages: list[AuditEntryOut]
+
+
+class PaginatedAudit(BaseModel):
+    """GET /api/audit-trail (global) — wrapped for a real page total,
+    consistent with every other paginated list endpoint."""
+    items: list[AuditEntryOut]
+    total: int
+    page: int
+    page_size: int
 
 
 # ── Summary / dashboard ───────────────────────────────────────────────────────
@@ -83,6 +117,7 @@ class SummaryOut(BaseModel):
     actions_executed: int
     actions_succeeded: int
     recovery_rate: float  # recovered_count / events_processed, 0..1
+    recovery_rate_pct: Optional[float] = None  # alias in % for legacy tests/docs
     # Period-over-period deltas vs the immediately preceding window of equal
     # length (doc A1 "deltas_vs_previous"). Relative % change for money/count
     # metrics; percentage-POINT change (not relative %) for the rate metric,
@@ -91,6 +126,10 @@ class SummaryOut(BaseModel):
     delta_revenue_at_risk_pct: Optional[float] = None
     delta_recovered_pct: Optional[float] = None
     delta_recovery_rate_pct: Optional[float] = None
+
+    def model_post_init(self, __context):
+        if self.recovery_rate_pct is None:
+            object.__setattr__(self, "recovery_rate_pct", round(self.recovery_rate * 100, 2))
 
 
 class TimeseriesPoint(BaseModel):
@@ -139,6 +178,12 @@ class GuardrailConfigOut(BaseModel):
     daily_contact_cap: int
     allowed_channels: list[str]
     updated_at: str
+    # The system-wide hard ceiling (settings.max_recovery_attempts) that
+    # `max_retries` is actually clamped to at guardrail-check time —
+    # surfaced so the UI can warn when a merchant's configured value is
+    # silently not the one in effect (AUDIT_REPORT.md "Guardrail hard caps
+    # vs UI ranges").
+    effective_max_retries: int
 
 
 class GuardrailConfigIn(BaseModel):
@@ -168,6 +213,11 @@ class PendingApprovalOut(BaseModel):
     created_at: str
 
 
+class PaginatedPendingApprovals(BaseModel):
+    items: list[PendingApprovalOut]
+    total: int
+
+
 class ApprovalActionIn(BaseModel):
     resolved_by: str = "merchant"
 
@@ -177,6 +227,7 @@ class ApprovalActionOut(BaseModel):
     status: str
     event_id: str
     recovery_attempt_id: Optional[str] = None
+    ok: bool = True
 
 
 # ── Strategies ────────────────────────────────────────────────────────────────
@@ -193,7 +244,14 @@ class BatchRunIn(BaseModel):
     n_events: int = Field(default=50, ge=1, le=2000)
     dry_run: bool = True
     use_ai: bool = False
-    random_seed: Optional[int] = None
+    random_seed: Optional[int] = Field(default=None, alias="seed")
+    # pydantic v2: allow both `seed` and `random_seed`
+    model_config = {"populate_by_name": True}
+    # Back-compat: tests send `seed`, frontend sends `random_seed`
+    # statuses alias for legacy test expectations (baseline/treatment statuses)
+    @property
+    def effective_seed(self) -> Optional[int]:
+        return self.random_seed
 
 
 class BatchRunOut(BaseModel):
@@ -205,6 +263,16 @@ class BatchRunOut(BaseModel):
     treatment: Optional[dict] = None
     created_at: str
     label: str = "Modeled incremental lift — not a measured causal effect (no randomized control group)."
+    # Back-compat for tests expecting `statuses`
+    statuses: Optional[dict] = None
+
+    def model_post_init(self, __context):
+        if self.statuses is None and self.treatment is not None:
+            # derive a simple statuses summary from treatment
+            object.__setattr__(self, "statuses", {
+                "baseline": self.baseline,
+                "treatment": self.treatment,
+            })
 
 
 # ── Demo (single-event injection, synthetic mode only) ─────────────────────────

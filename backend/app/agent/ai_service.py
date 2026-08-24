@@ -1,5 +1,18 @@
 """AI augmentation layer (doc C6) — a wrapper that NEVER raises.
 
+AUDIT NOTE (2026-08-24): this module is NOT imported by the live FastAPI
+app (main.py / api/routes.py / webhooks/webhook.py / pipeline/pipeline.py /
+pipeline/scheduler.py / services/agent_service.py / services/execution_service.py
+never import it). Its only callers are `services/approvals.py` and
+`pipeline/executor.py`, which are themselves unreachable dead code (see
+their module docstrings) — verified by reading every import in
+backend/app/**/*.py. The live equivalent, actually wired into
+`pipeline.process_event`, is `services/ai_service.py` (different, richer
+return type: `AIResult`, not a bare `tuple | None`). Do not confuse the
+two. See AUDIT_REPORT.md §"Agent double-stack" and TODO.md for the
+recommended cleanup (delete this whole legacy chain once independently
+re-verified with `grep -rn` + a clean `pytest` run).
+
 Every function returns `None` on any failure (including "no key configured"),
 so the pipeline always has a deterministic fallback available. Swapping to
 Bedrock/Vertex touches only `_client()` — every signature stays identical.

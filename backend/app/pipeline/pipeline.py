@@ -185,15 +185,25 @@ def _process_event_deterministic(event: dict, cfg: dict) -> dict:
         mechanism=decision.execution_mechanism or ExecutionMechanism.reminder_only,
         customer=customer,
     )
-    new_status = EventStatus.scheduled.value if result.status == "scheduled" else EventStatus.waiting_for_outcome.value
+    if result.status == "scheduled":
+        new_status = EventStatus.scheduled.value
+    elif result.status == "failed":
+        # A live Razorpay call failed at the provider (network/API error) —
+        # a real, visible failure, never silently treated as "awaiting outcome".
+        new_status = EventStatus.failed.value
+    else:
+        new_status = EventStatus.waiting_for_outcome.value
     db.update_event(event_id, status=new_status)
     _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.executed,
-           message=f"Executed via {result.execution_mechanism}",
+           message=(f"Execution failed at the payment provider: {result.error}" if result.status == "failed"
+                    else f"Executed via {result.execution_mechanism}"),
            payload={"recovery_attempt_id": result.recovery_attempt_id,
-                     "execution_mode": result.execution_mode, "razorpay_ref": result.razorpay_ref})
+                     "execution_mode": result.execution_mode, "razorpay_ref": result.razorpay_ref,
+                     "error": result.error})
     _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.outcome,
-           message="Awaiting payment outcome",
-           payload={"status": "pending", "recovery_attempt_id": result.recovery_attempt_id})
+           message="Execution failed — no outcome to await" if result.status == "failed" else "Awaiting payment outcome",
+           payload={"status": "failed" if result.status == "failed" else "pending",
+                     "recovery_attempt_id": result.recovery_attempt_id})
     return {"event_id": event_id, "status": new_status, "action": decision.action.value,
             "recovery_attempt_id": result.recovery_attempt_id}
 

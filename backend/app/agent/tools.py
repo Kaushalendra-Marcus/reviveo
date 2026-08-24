@@ -1,5 +1,15 @@
 """Agent tool layer (doc Part C).
 
+AUDIT NOTE (2026-08-24): NOT wired into the live app. `run_agent_for_event`
+in `services/agent_service.py` — the module `pipeline.process_event` actually
+calls when `use_ai=True` — has its own independent tool implementation and
+never imports this file. This module is only reachable via `agent/loop.py`
+(itself unreferenced by anything live) and `services/approvals.py` (also
+dead — see that module's docstring). Its previously-broken import
+(`ACTION_MECHANISM`/`CAUSE_CONFIDENCE` from decision_engine) was fixed via
+public aliases added there, but that only stops an ImportError — it does
+not make this the live implementation. See AUDIT_REPORT.md and TODO.md.
+
 Six bounded tools back onto existing deterministic implementations. Per C4,
 guardrail enforcement lives INSIDE the tools' Python code — the model cannot
 propose its way past `check_guardrails`, and mutating tools refuse to record a

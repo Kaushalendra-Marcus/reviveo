@@ -40,10 +40,12 @@ def _get_client() -> "razorpay.Client":
 
 @dataclass(frozen=True)
 class PaymentLinkResult:
-    razorpay_ref: str       # Payment Link id (plink_...)
-    reference_id: str       # our own unique reference_id sent to Razorpay
+    razorpay_ref: Optional[str]   # Payment Link id (plink_...); None if the call failed
+    reference_id: str             # our own unique reference_id sent to Razorpay
     short_url: Optional[str]
     live: bool
+    ok: bool = True                # False iff a live Razorpay call raised (network/API error)
+    error: Optional[str] = None    # set iff ok is False
 
 
 def create_payment_link(
@@ -98,7 +100,18 @@ def create_payment_link(
         "notify": {"sms": bool(customer_phone), "email": bool(customer_email)},
         "reminder_enable": True,
     }
-    link = client.payment_link.create(data=payload)
+    try:
+        link = client.payment_link.create(data=payload)
+    except Exception as exc:  # noqa: BLE001 — a live Razorpay failure must degrade to a
+        # recorded failed attempt, never an uncaught 500 that leaves an event/approval
+        # stuck mid-transition (production-readiness gap fixed 2026-08-24 audit).
+        logger.warning("live payment link creation failed", extra={"context": {
+            "recovery_attempt_id": recovery_attempt_id, "error": str(exc),
+        }})
+        return PaymentLinkResult(
+            razorpay_ref=None, reference_id=reference_id, short_url=None,
+            live=True, ok=False, error=str(exc),
+        )
     logger.info("live payment link created", extra={"context": {
         "recovery_attempt_id": recovery_attempt_id, "razorpay_ref": link.get("id"),
     }})

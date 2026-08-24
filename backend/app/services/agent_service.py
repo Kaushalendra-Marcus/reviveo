@@ -364,16 +364,24 @@ def _execute_checked_action(ctx: _AgentContext, merchant_id: str, audit: Callabl
         merchant_id=merchant_id, event=ctx.event, action=ctx.checked_action,
         mechanism=ctx.checked_mechanism or ExecutionMechanism.reminder_only, customer=ctx.customer,
     )
-    new_status = EventStatus.scheduled.value if result.status == "scheduled" else EventStatus.waiting_for_outcome.value
+    if result.status == "scheduled":
+        new_status = EventStatus.scheduled.value
+    elif result.status == "failed":
+        new_status = EventStatus.failed.value
+    else:
+        new_status = EventStatus.waiting_for_outcome.value
     db.update_event(ctx.event["event_id"], status=new_status)
     audit(event_id=ctx.event["event_id"], merchant_id=merchant_id, stage=AuditStage.executed,
-          message=f"Agent executed via {result.execution_mechanism}",
-          payload={"recovery_attempt_id": result.recovery_attempt_id, "execution_mode": result.execution_mode},
+          message=(f"Agent execution failed at the payment provider: {result.error}" if result.status == "failed"
+                   else f"Agent executed via {result.execution_mechanism}"),
+          payload={"recovery_attempt_id": result.recovery_attempt_id, "execution_mode": result.execution_mode,
+                    "error": result.error},
           ai_used=True)
     ctx.executed = True
     ctx.result_summary = {"status": new_status, "action": ctx.checked_action.value,
                            "recovery_attempt_id": result.recovery_attempt_id}
-    return {"executed": True, "recovery_attempt_id": result.recovery_attempt_id, "status": new_status}
+    return {"executed": result.status != "failed", "recovery_attempt_id": result.recovery_attempt_id,
+            "status": new_status, "error": result.error}
 
 
 def _tool_create_payment_link(args: dict, ctx: _AgentContext, merchant_id: str, audit: Callable) -> dict:

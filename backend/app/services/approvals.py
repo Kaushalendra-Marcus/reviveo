@@ -1,5 +1,23 @@
 """Human approval workflow (doc A2, §3.12, §3.13).
 
+AUDIT NOTE (2026-08-24): this module is NOT wired into the live app.
+`api/routes.py`'s `POST /api/approvals/{id}/approve` and `/deny` endpoints —
+the actual HTTP-facing approval flow — implement their own inline logic and
+never call `approve()`/`deny()`/`enqueue()` below (verified by reading every
+import in `api/routes.py`). Nothing in the deterministic pipeline
+(`pipeline.py`) or the agentic loop (`services/agent_service.py`) calls
+`enqueue()` either — both insert into `pending_approvals` directly. The only
+caller of this module was `agent/tools.py`'s `escalate_to_human` tool, which
+is itself unreachable (see that module's docstring).
+
+This module has been fixed (routed through the canonical
+`services/execution_service.execute_action` and `domain/guardrails.
+check_guardrails`, and the canonical `services/ai_service.py` interface)
+so it is no longer a landmine if it's ever revived, but it remains inert
+duplicate code today. See AUDIT_REPORT.md and TODO.md for the recommended
+cleanup (delete this module, or wire `api/routes.py` to call it, once
+independently re-verified).
+
 State machine: pending → approved → executing → executed (branches: denied,
 expired, execution_failed). Claims are atomic (`UPDATE ... WHERE status=?`,
 rowcount==1) so double-clicks and concurrent reviewers can never trigger
@@ -12,10 +30,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import db
-from ..agent import ai_service
 from ..config import settings
-from ..enums import Action, ApprovalStatus, AuditStage, EventStatus
+from ..domain.guardrails import check_guardrails
+from ..enums import Action, ApprovalStatus, AuditStage, ExecutionMechanism, EventStatus
 from ..logging_config import get_logger
+from . import ai_service, execution_service
 
 logger = get_logger("reviveo.approvals")
 
@@ -28,16 +47,13 @@ def enqueue(
     reason: str = "",
 ) -> int:
     """Route an event to a human. Inserts the approval row + approval audit."""
-    summary = None
-    ai_summary = ai_service.summarize_for_approval({
-        "cause": decision.get("cause"),
-        "action": decision.get("action"),
-        "amount_rupees": event["amount_paise"] / 100,
-        "reason": reason or decision.get("reasoning"),
-        "customer": db.get_customer(merchant_id, event.get("customer_id") or ""),
-    })
-    if ai_summary is not None:
-        summary, _latency = ai_summary
+    ai_result = ai_service.summarize_for_approval(
+        event=event,
+        decision=decision,
+        guardrail_reason=reason or None,
+        fallback=reason or decision.get("reasoning") or "Routed to human approval.",
+    )
+    summary = ai_result.text
 
     approval_id = db.insert_approval({
         "merchant_id": merchant_id,
@@ -54,15 +70,14 @@ def enqueue(
         "message": f"Routed to human approval ({decision['action']}): "
                    f"{reason or 'policy requires review'}.",
         "payload": {"approval_id": approval_id, "ai_summary_attached": summary is not None},
+        "ai_used": ai_result.used, "ai_model": ai_result.model,
+        "ai_latency_ms": ai_result.latency_ms, "fallback_triggered": ai_result.fallback_triggered,
     })
     return approval_id
 
 
 def approve(approval_id: int, resolved_by: str = "merchant-dashboard") -> dict:
     """Atomically claim + execute an approved action through the shared path."""
-    from ..guardrails.guardrails import evaluate
-    from ..pipeline import executor
-
     row = db.get_approval(approval_id)
     if row is None:
         raise KeyError(f"Unknown approval {approval_id}")
@@ -109,28 +124,48 @@ def approve(approval_id: int, resolved_by: str = "merchant-dashboard") -> dict:
         return finish(ApprovalStatus.execution_failed,
                       f"Event already {event['status']}; nothing to execute.", {})
 
-    # Fresh guardrails at execution time — approval is not a bypass.
-    guard = evaluate(row["merchant_id"], event, row["proposed_action"],
-                     row["amount_paise"], cfg=cfg)
-    if not guard.passed:
+    if row["execution_mechanism"] is None:
+        # A genuine escalate_to_human proposal — there is no automated
+        # mechanism to run; approving records that a human handles this
+        # outside the system.
+        db.update_event(row["event_id"], status=EventStatus.closed.value)
+        return finish(ApprovalStatus.executed, f"Approved by {resolved_by} for manual handling.", {})
+
+    # Fresh guardrails at execution time — approval is not a bypass (doc C4).
+    attempt_count = db.count_attempts(row["event_id"])
+    last_attempt_at = db.last_attempt_time(row["event_id"])
+    guard = check_guardrails(
+        merchant_id=row["merchant_id"], cfg=cfg, action=Action(row["proposed_action"]),
+        amount_paise=row["amount_paise"], attempt_count=attempt_count,
+        last_attempt_at=last_attempt_at, event_created_at=event["created_at"],
+    )
+    if guard.blocked:
         transition_failed(event, row)
         return finish(ApprovalStatus.execution_failed,
-                      f"Guardrails blocked approved action: {'; '.join(guard.blocked_reasons)}",
-                      {"blocked_reasons": guard.blocked_reasons})
+                      f"Guardrails blocked approved action: {guard.reason}",
+                      {"code": guard.code, "reason": guard.reason})
 
-    decision = {
-        "action": row["proposed_action"],
-        "mechanism": row["execution_mechanism"],
-        "ai_used": False,
-    }
-    result = executor.execute_decision(event, decision)
+    customer = db.get_customer(row["merchant_id"], event["customer_id"]) if event.get("customer_id") else None
+    result = execution_service.execute_action(
+        merchant_id=row["merchant_id"], event=event,
+        action=Action(row["proposed_action"]),
+        mechanism=ExecutionMechanism(row["execution_mechanism"]),
+        customer=customer,
+    )
+    if result.status == "scheduled":
+        db.update_event(row["event_id"], status=EventStatus.scheduled.value)
+    elif result.status == "failed":
+        db.update_event(row["event_id"], status=EventStatus.failed.value)
+    else:
+        db.update_event(row["event_id"], status=EventStatus.waiting_for_outcome.value)
 
-    if result["attempt"]["status"] == "failed":
+    if result.status == "failed":
         return finish(ApprovalStatus.execution_failed,
-                      "Execution failed at the payment provider.", {})
+                      f"Execution failed at the payment provider: {result.error}",
+                      {"recovery_attempt_id": result.recovery_attempt_id, "error": result.error})
     return finish(ApprovalStatus.executed,
                   f"Approved by {resolved_by} and executed via shared execution path.",
-                  {"recovery_attempt_id": result["attempt"]["recovery_attempt_id"]})
+                  {"recovery_attempt_id": result.recovery_attempt_id})
 
 
 def deny(approval_id: int, resolved_by: str = "merchant-dashboard",
@@ -176,6 +211,10 @@ def expire_stale() -> int:
 
 
 def transition_failed(event: dict, row: dict) -> None:
-    from .state_machine import transition
+    # NOTE: the original version of this file imported `.state_machine`,
+    # which does not exist under `services/` (state_machine.py lives under
+    # `pipeline/`) — that would have raised ImportError the first time this
+    # dead branch actually ran. Fixed as part of the 2026-08-24 audit.
+    from ..pipeline.state_machine import transition
 
     transition(event["event_id"], EventStatus.failed)

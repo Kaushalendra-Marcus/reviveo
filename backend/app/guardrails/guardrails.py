@@ -1,5 +1,19 @@
 """Deterministic guardrails — the enforcement boundary (doc §3.10, C4).
 
+AUDIT NOTE (2026-08-24): this module (`app/guardrails/guardrails.py`,
+`evaluate()`) is a SEPARATE, DUPLICATE implementation from the one actually
+enforced on every live request path: `app/domain/guardrails.py`
+(`check_guardrails()`), imported by `pipeline.py`, `services/agent_service.py`,
+and `api/routes.py`'s `approve_approval`. The two have diverged (different
+check ordering, different cooldown scoping — this version applies cooldown
+to ANY action with a prior attempt timestamp, `domain/guardrails.py` scopes
+it to retry-style actions only). This module is only reachable from
+`agent/tools.py` and `pipeline/executor.py`, both themselves dead code (see
+their docstrings). Do not add new callers of this module — use
+`app/domain/guardrails.check_guardrails` instead. See AUDIT_REPORT.md and
+TODO.md for the recommended cleanup (delete this module once independently
+re-verified with `grep -rn` + a clean `pytest` run).
+
 The agent may propose, but these checks decide. Every check reads live state
 (attempts, counters, config) from the DB; nothing here trusts caller-supplied
 "current values". `escalate_to_human` always passes: escalation is never a

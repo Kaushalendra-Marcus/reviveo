@@ -32,12 +32,39 @@ async def run_scheduler_loop() -> None:
 
 def process_due_scheduled_attempts(merchant_id: str | None = None) -> int:
     """Revalidates and (re-)executes every scheduled attempt whose time has
-    come. Returns how many were processed. Plain synchronous function so it
-    can also be triggered directly (tests, or a manual 'run scheduler now'
-    action) without needing the asyncio loop.
+    come, plus expires stale waiting events and stale approvals (AUDIT_REPORT
+    "Scheduler persistence gap"). Returns how many scheduled attempts were
+    processed. Plain synchronous function so it can also be triggered directly
+    (tests, or a manual 'run scheduler now' action) without needing the loop.
     """
     merchant_id = merchant_id or settings.default_merchant_id
     due = db.due_scheduled_attempts(merchant_id)
     for attempt in due:
         pipeline.revalidate_and_execute_scheduled(attempt)
+
+    # Stale waiting_for_outcome sweep: if no outcome webhook arrives within
+    # the recovery window, finally resolve to expired so the dashboard doesn't
+    # show indefinitely pending rows.
+    from datetime import datetime, timedelta, timezone
+    from ..services import approvals as approvals_service
+
+    cfg = db.get_guardrail_config(merchant_id)
+    if cfg:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=cfg["recovery_window_days"])).isoformat()
+        for ev in db.stale_waiting_events(merchant_id, cutoff):
+            db.update_event(ev["event_id"], status="expired")
+            db.update_recovery_attempt(
+                db.list_attempts_for_event(ev["event_id"])[-1]["recovery_attempt_id"]
+                if db.list_attempts_for_event(ev["event_id"]) else "",
+                status="expired",
+            ) if db.list_attempts_for_event(ev["event_id"]) else None
+            db.insert_audit({
+                "event_id": ev["event_id"], "merchant_id": merchant_id,
+                "stage": "outcome", "message": "Expired via scheduler sweep (no outcome within window)",
+                "payload": {"expired_by": "scheduler"},
+            })
+    try:
+        approvals_service.expire_stale()
+    except Exception:
+        pass
     return len(due)

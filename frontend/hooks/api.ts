@@ -63,16 +63,32 @@ export const fetchStrategies = (range: RangeDays) => api.get<StrategyRow[]>(`/ap
 export const fetchEvents = (query: EventsQuery) => api.get<EventsPage>(buildEventsPath(query));
 export const fetchEventDetail = (eventId: string) =>
   api.get<EventDetail>(`/api/events/${encodeURIComponent(eventId)}`);
-export const fetchAuditTrail = (eventId: string) =>
-  api.get<AuditEntryOut[]>(`/api/events/${encodeURIComponent(eventId)}/audit-trail`);
+export const fetchAuditTrail = async (eventId: string): Promise<AuditEntryOut[]> => {
+  const data = await api.get<AuditEntryOut[] | { event_id: string; stages: AuditEntryOut[] }>(
+    `/api/events/${encodeURIComponent(eventId)}/audit-trail`
+  );
+  if (Array.isArray(data)) return data;
+  return (data as { stages: AuditEntryOut[] }).stages ?? [];
+};
 export const fetchRawLog = (eventId: string) =>
   api.get<RawLogResponse>(`/api/events/${encodeURIComponent(eventId)}/raw-log`);
-export const fetchGlobalAudit = (page: number, pageSize = 50) =>
-  api.get<AuditEntryOut[]>(`/api/audit-trail?page=${page}&page_size=${pageSize}`);
+export const fetchGlobalAudit = async (page: number, pageSize = 50): Promise<AuditEntryOut[]> => {
+  const data = await api.get<AuditEntryOut[] | { items: AuditEntryOut[] }>(
+    `/api/audit-trail?page=${page}&page_size=${pageSize}`
+  );
+  if (Array.isArray(data)) return data;
+  return (data as { items: AuditEntryOut[] }).items ?? [];
+};
 export const fetchCustomers = (page: number, pageSize = 20) =>
   api.get<CustomersPage>(`/api/customers?page=${page}&page_size=${pageSize}`);
 export const fetchGuardrails = () => api.get<GuardrailConfig>("/api/guardrails");
-export const fetchPendingApprovals = () => api.get<PendingApproval[]>("/api/guardrails/pending-approvals");
+export const fetchPendingApprovals = async (): Promise<PendingApproval[]> => {
+  const data = await api.get<PendingApproval[] | { items: PendingApproval[] }>(
+    "/api/guardrails/pending-approvals"
+  );
+  if (Array.isArray(data)) return data;
+  return (data as { items: PendingApproval[] }).items ?? [];
+};
 export const fetchLastSimulation = () => api.get<BatchRunResult | null>("/api/batch/last-summary");
 
 /** No day is guaranteed to appear in both series (a day with only at-risk

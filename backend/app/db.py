@@ -242,14 +242,16 @@ def update_event(event_id: str, **fields) -> None:
 
 
 def list_events(merchant_id: str, *, status: Optional[str] = None,
-                cause: Optional[str] = None, limit: int = 20,
-                offset: int = 0) -> list[dict]:
+                cause: Optional[str] = None, origin: Optional[str] = None,
+                limit: int = 20, offset: int = 0) -> list[dict]:
     where = ["merchant_id=?"]
     params: list[Any] = [merchant_id]
     if status:
         where.append("status=?"); params.append(status)
     if cause:
         where.append("cause=?"); params.append(cause)
+    if origin:
+        where.append("origin=?"); params.append(origin)
     clause = " AND ".join(where)
     return query_all(
         f"SELECT * FROM events WHERE {clause} ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -258,16 +260,30 @@ def list_events(merchant_id: str, *, status: Optional[str] = None,
 
 
 def count_events(merchant_id: str, *, status: Optional[str] = None,
-                 cause: Optional[str] = None) -> int:
+                 cause: Optional[str] = None, origin: Optional[str] = None) -> int:
     where = ["merchant_id=?"]
     params: list[Any] = [merchant_id]
     if status:
         where.append("status=?"); params.append(status)
     if cause:
         where.append("cause=?"); params.append(cause)
+    if origin:
+        where.append("origin=?"); params.append(origin)
     clause = " AND ".join(where)
     return query_one(f"SELECT COUNT(*) n FROM events WHERE {clause}",
                      params)["n"]  # type: ignore[index]
+
+
+def stale_waiting_events(merchant_id: str, cutoff: str) -> list[dict]:
+    """Events stuck in 'waiting_for_outcome' whose recovery window has
+    already elapsed with no outcome webhook ever arriving — the scheduler's
+    stale-attempt sweep uses this to finally resolve them to 'expired'
+    instead of showing indefinitely pending on the dashboard."""
+    return query_all(
+        "SELECT * FROM events WHERE merchant_id=? AND status='waiting_for_outcome' "
+        "AND created_at<?",
+        (merchant_id, cutoff),
+    )
 
 
 # ── decisions ─────────────────────────────────────────────────────────────────
@@ -291,6 +307,10 @@ def get_latest_decision(event_id: str) -> Optional[dict]:
         "SELECT * FROM decisions WHERE event_id=? ORDER BY id DESC LIMIT 1",
         (event_id,),
     )
+
+
+def list_decisions_for_event(event_id: str) -> list[dict]:
+    return query_all("SELECT * FROM decisions WHERE event_id=? ORDER BY id", (event_id,))
 
 
 # ── recovery attempts ─────────────────────────────────────────────────────────
@@ -458,6 +478,11 @@ def list_all_audit(merchant_id: str, limit: int, offset: int) -> list[dict]:
     return rows
 
 
+def count_all_audit(merchant_id: str) -> int:
+    return query_one("SELECT COUNT(*) n FROM audit_log WHERE merchant_id=?",
+                     (merchant_id,))["n"]  # type: ignore[index]
+
+
 # ── webhook events (idempotency, doc §3.6) ────────────────────────────────────
 def try_insert_webhook(merchant_id: str, razorpay_event_id: str,
                        event_name: str, raw_payload: str) -> bool:
@@ -538,25 +563,57 @@ def list_simulations(merchant_id: str, limit: int = 20) -> list[dict]:
 
 
 # ── reporting / aggregation ───────────────────────────────────────────────────
-def summary_metrics(merchant_id: str, since: str) -> dict:
+def summary_metrics(merchant_id: str, since: str, *, until: Optional[str] = None,
+                    origin: Optional[str] = None) -> dict:
+    """Aggregate metrics for the half-open window [since, until). `until=None`
+    means "through now" (the current period) — pass an explicit `until` to
+    compute a prior comparison window of equal length (doc A1
+    'deltas_vs_previous'). `origin` optionally restricts to a single
+    DataOrigin ('synthetic' or 'live_test_mode'); omitted (None) preserves
+    the original all-origin behavior (doc §3.14 keeps the two explicitly
+    separable without forcing separation by default).
+    """
+    at_risk_where = "merchant_id=? AND created_at>=?"
+    at_risk_params: list[Any] = [merchant_id, since]
+    if until:
+        at_risk_where += " AND created_at<?"; at_risk_params.append(until)
+    if origin:
+        at_risk_where += " AND origin=?"; at_risk_params.append(origin)
     at_risk = query_one(
-        "SELECT COALESCE(SUM(amount_paise),0) v, COUNT(*) n FROM events "
-        "WHERE merchant_id=? AND created_at>=?",
-        (merchant_id, since),
+        f"SELECT COALESCE(SUM(amount_paise),0) v, COUNT(*) n FROM events WHERE {at_risk_where}",
+        at_risk_params,
     )
+
+    recovered_where = "rp.merchant_id=? AND rp.recovered_at>=?"
+    recovered_params: list[Any] = [merchant_id, since]
+    if until:
+        recovered_where += " AND rp.recovered_at<?"; recovered_params.append(until)
+    recovered_join = ""
+    if origin:
+        recovered_join = " JOIN events e ON e.event_id=rp.event_id"
+        recovered_where += " AND e.origin=?"; recovered_params.append(origin)
     recovered = query_one(
-        "SELECT COALESCE(SUM(amount_paise),0) v, COUNT(*) n FROM recovered_payments "
-        "WHERE merchant_id=? AND recovered_at>=?",
-        (merchant_id, since),
+        f"SELECT COALESCE(SUM(rp.amount_paise),0) v, COUNT(*) n FROM recovered_payments rp"
+        f"{recovered_join} WHERE {recovered_where}",
+        recovered_params,
     )
+
+    attempts_where = "ra.merchant_id=? AND ra.created_at>=?"
+    attempts_params: list[Any] = [merchant_id, since]
+    if until:
+        attempts_where += " AND ra.created_at<?"; attempts_params.append(until)
+    attempts_join = ""
+    if origin:
+        attempts_join = " JOIN events e ON e.event_id=ra.event_id"
+        attempts_where += " AND e.origin=?"; attempts_params.append(origin)
     actions = query_one(
-        "SELECT COUNT(*) n FROM recovery_attempts WHERE merchant_id=? AND created_at>=?",
-        (merchant_id, since),
+        f"SELECT COUNT(*) n FROM recovery_attempts ra{attempts_join} WHERE {attempts_where}",
+        attempts_params,
     )
     executed_ok = query_one(
-        "SELECT COUNT(*) n FROM recovery_attempts WHERE merchant_id=? AND created_at>=? "
-        "AND status IN ('recovered','awaiting_outcome')",
-        (merchant_id, since),
+        f"SELECT COUNT(*) n FROM recovery_attempts ra{attempts_join} WHERE {attempts_where} "
+        f"AND ra.status IN ('recovered','awaiting_outcome')",
+        attempts_params,
     )
     return {
         "revenue_at_risk_paise": at_risk["v"],       # type: ignore[index]
@@ -568,21 +625,30 @@ def summary_metrics(merchant_id: str, since: str) -> dict:
     }
 
 
-def timeseries_recovered(merchant_id: str, since: str) -> list[dict]:
+def timeseries_recovered(merchant_id: str, since: str, *, origin: Optional[str] = None) -> list[dict]:
+    join = " JOIN events e ON e.event_id=rp.event_id" if origin else ""
+    where = "rp.merchant_id=? AND rp.recovered_at>=?"
+    params: list[Any] = [merchant_id, since]
+    if origin:
+        where += " AND e.origin=?"; params.append(origin)
     return query_all(
-        "SELECT substr(recovered_at,1,10) day, COALESCE(SUM(amount_paise),0) amount_paise, "
-        "COUNT(*) count FROM recovered_payments WHERE merchant_id=? AND recovered_at>=? "
-        "GROUP BY day ORDER BY day",
-        (merchant_id, since),
+        f"SELECT substr(rp.recovered_at,1,10) day, COALESCE(SUM(rp.amount_paise),0) amount_paise, "
+        f"COUNT(*) count FROM recovered_payments rp{join} WHERE {where} "
+        f"GROUP BY day ORDER BY day",
+        params,
     )
 
 
-def timeseries_at_risk(merchant_id: str, since: str) -> list[dict]:
+def timeseries_at_risk(merchant_id: str, since: str, *, origin: Optional[str] = None) -> list[dict]:
+    where = "merchant_id=? AND created_at>=?"
+    params: list[Any] = [merchant_id, since]
+    if origin:
+        where += " AND origin=?"; params.append(origin)
     return query_all(
-        "SELECT substr(created_at,1,10) day, COALESCE(SUM(amount_paise),0) amount_paise, "
-        "COUNT(*) count FROM events WHERE merchant_id=? AND created_at>=? "
-        "GROUP BY day ORDER BY day",
-        (merchant_id, since),
+        f"SELECT substr(created_at,1,10) day, COALESCE(SUM(amount_paise),0) amount_paise, "
+        f"COUNT(*) count FROM events WHERE {where} "
+        f"GROUP BY day ORDER BY day",
+        params,
     )
 
 

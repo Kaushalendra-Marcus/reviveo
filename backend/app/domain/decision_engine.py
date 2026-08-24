@@ -68,6 +68,16 @@ _BASE_CONFIDENCE_BY_CAUSE: dict[Cause, float] = {
     Cause.unclassified: 0.20,        # always escalate
 }
 
+# Public aliases. The underscore-prefixed names above are the canonical
+# source of truth used by every live code path (decide()/choose_action()).
+# These aliases exist only so backend/app/agent/tools.py — a legacy,
+# currently-unwired agent implementation kept for reference (see that
+# module's docstring) — doesn't raise ImportError if it's ever imported.
+# Audit note (2026-08-24): fixing this import was the cheapest safe fix
+# available; it does not mean agent/tools.py is wired into the running app.
+ACTION_MECHANISM = _DEFAULT_MECHANISM_BY_ACTION
+CAUSE_CONFIDENCE = _BASE_CONFIDENCE_BY_CAUSE
+
 
 @dataclass(frozen=True)
 class Decision:

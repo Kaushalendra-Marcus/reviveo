@@ -1,5 +1,11 @@
 """Native Claude tool-use orchestration loop (doc Part C).
 
+AUDIT NOTE (2026-08-24): NOT wired into the live app — nothing imports
+`run_agent` from this module (verified: `pipeline.py` calls
+`services/agent_service.run_agent_for_event` instead, which is the live
+agentic implementation). Kept for reference only. See AUDIT_REPORT.md and
+TODO.md for the recommended cleanup.
+
 No agent framework — the tool count is small and the loop short (C1). Every
 step is bounded by runtime limits (§3.10) and every step's trace is returned
 so the pipeline can write AI-usage fields into the audit trail (C7). Any

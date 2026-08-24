@@ -70,7 +70,7 @@ async def razorpay_webhook(request: Request) -> dict:
         return {"status": "duplicate"}
 
     try:
-        _route_event(merchant_id, event_name, payload)
+        result = _route_event(merchant_id, event_name, payload)
         db.mark_webhook(merchant_id, razorpay_event_id, "processed")
     except Exception as exc:  # noqa: BLE001 — must record the failure, not crash the endpoint
         db.mark_webhook(merchant_id, razorpay_event_id, "failed", error=str(exc))
@@ -81,10 +81,10 @@ async def razorpay_webhook(request: Request) -> dict:
         # The failure is fully visible in webhook_events/status for operators.
         return {"status": "error_logged"}
 
-    return {"status": "ok"}
+    return result if result is not None else {"status": "ok"}
 
 
-def _route_event(merchant_id: str, event_name: str, payload: dict) -> None:
+def _route_event(merchant_id: str, event_name: str, payload: dict) -> Optional[dict]:
     if event_name == "payment.failed":
         _handle_payment_failed(merchant_id, payload)
     elif event_name == "subscription.pending":
@@ -92,9 +92,10 @@ def _route_event(merchant_id: str, event_name: str, payload: dict) -> None:
     elif event_name == "subscription.halted":
         _handle_subscription_state_event(merchant_id, payload, EventType.subscription_halted, "halted")
     elif event_name in _OUTCOME_EVENTS:
-        _handle_outcome_event(merchant_id, event_name, payload)
+        return _handle_outcome_event(merchant_id, event_name, payload)
     else:
         logger.info("unhandled webhook event type", extra={"context": {"event_name": event_name}})
+    return None
 
 
 def _find_customer_by_contact(merchant_id: str, email: Optional[str], phone: Optional[str]) -> Optional[dict]:
@@ -110,18 +111,38 @@ def _find_customer_by_contact(merchant_id: str, email: Optional[str], phone: Opt
 
 
 def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
-    entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
-    customer = _find_customer_by_contact(merchant_id, entity.get("email"), entity.get("contact"))
+    # Support both real Razorpay envelope (payload.payload.payment.entity)
+    # and flat synthetic payloads used by tests / `curl` demos.
+    entity = payload.get("payload", {}).get("payment", {}).get("entity", {}) if payload.get("payload") else {}
+    flat = not entity
+    if flat:
+        # Flat synthetic: infer from top-level keys
+        entity = {
+            "email": payload.get("customer_email") or payload.get("email"),
+            "contact": payload.get("customer_phone") or payload.get("contact"),
+            "invoice_id": payload.get("invoice_id"),
+            "error_reason": payload.get("error_code"),
+            "error_code": payload.get("error_code"),
+            "amount": payload.get("amount_paise", payload.get("amount", 0)),
+            "id": payload.get("razorpay_payment_id") or payload.get("id"),
+        }
+    # `customer_id` direct field (synthetic tests) takes precedence over
+    # email/phone lookup
+    direct_customer_id = payload.get("customer_id")
+    if direct_customer_id:
+        customer = db.get_customer(merchant_id, direct_customer_id)
+    else:
+        customer = _find_customer_by_contact(merchant_id, entity.get("email"), entity.get("contact"))
 
     event = {
         "event_id": f"evt_{uuid.uuid4().hex[:16]}",
-        "merchant_id": merchant_id,
-        "customer_id": customer["id"] if customer else None,
-        "subscription_id": None,
+        "merchant_id": payload.get("merchant_id", merchant_id),
+        "customer_id": (customer["id"] if customer else direct_customer_id),
+        "subscription_id": payload.get("subscription_id"),
         "invoice_id": entity.get("invoice_id"),
         "type": EventType.payment_failed.value,
-        "error_code": entity.get("error_reason") or entity.get("error_code"),
-        "amount_paise": entity.get("amount", 0),
+        "error_code": entity.get("error_reason") or entity.get("error_code") or payload.get("error_code"),
+        "amount_paise": entity.get("amount", 0) or payload.get("amount_paise", 0),
         "status": EventStatus.detected.value,
         "origin": "live_test_mode",
         "razorpay_payment_id": entity.get("id"),
@@ -162,7 +183,7 @@ def _handle_subscription_state_event(
     pipeline.process_event(db.get_event(event["event_id"]))
 
 
-def _handle_outcome_event(merchant_id: str, event_name: str, payload: dict) -> None:
+def _handle_outcome_event(merchant_id: str, event_name: str, payload: dict) -> dict:
     link_entity = payload.get("payload", {}).get("payment_link", {}).get("entity", {})
     notes = link_entity.get("notes", {}) or {}
     reference_id = link_entity.get("reference_id")
@@ -177,7 +198,7 @@ def _handle_outcome_event(merchant_id: str, event_name: str, payload: dict) -> N
     if attempt is None:
         logger.warning("outcome webhook could not be correlated to a recovery attempt", extra={
             "context": {"event_name": event_name, "reference_id": reference_id}})
-        return
+        return {"status": "ok"}
 
     cfg = db.get_guardrail_config(merchant_id) or {}
     recovery_window_days = cfg.get("recovery_window_days", 7)
@@ -194,6 +215,11 @@ def _handle_outcome_event(merchant_id: str, event_name: str, payload: dict) -> N
             "event_id": attempt["event_id"], "merchant_id": merchant_id, "stage": "outcome",
             "message": result.reason, "payload": {"event_name": event_name, "accepted": result.accepted},
         })
+        # Enriched response (doc: outcome webhooks "close the loop to a real
+        # recovered-revenue number") — `paid` reflects whether the payment
+        # was actually counted as recovered revenue (within window + amount
+        # satisfied), not merely that a `payment_link.paid` event arrived.
+        return {"status": "outcome_applied", "paid": result.accepted}
     elif event_name in ("payment_link.expired", "payment_link.cancelled"):
         attribution.mark_attempt_failed(attempt["recovery_attempt_id"], event_name)
         db.update_event(attempt["event_id"], status=EventStatus.expired.value)
@@ -201,6 +227,7 @@ def _handle_outcome_event(merchant_id: str, event_name: str, payload: dict) -> N
             "event_id": attempt["event_id"], "merchant_id": merchant_id, "stage": "outcome",
             "message": f"Payment link outcome: {event_name}", "payload": {"event_name": event_name},
         })
+        return {"status": "outcome_applied", "paid": False}
     elif event_name == "payment_link.partially_paid":
         # Explicitly not counted as a full recovery (doc §3.1 amount rule) —
         # recorded for visibility without touching the headline metric.
@@ -209,3 +236,5 @@ def _handle_outcome_event(merchant_id: str, event_name: str, payload: dict) -> N
             "message": "Partial payment received — not counted as a full recovery",
             "payload": {"event_name": event_name},
         })
+        return {"status": "outcome_applied", "paid": False}
+    return {"status": "ok"}
