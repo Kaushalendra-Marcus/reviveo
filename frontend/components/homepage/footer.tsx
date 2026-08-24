@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import React, { type FormEvent, useRef, useState } from 'react';
-import { motion, useInView } from 'framer-motion';
+import { motion, useInView, useReducedMotion } from 'framer-motion';
 import { toast } from 'sonner';
 
 const BlobCanvas = dynamic(() => import('./blob-canvas').then((m) => m.BlobCanvas), {
@@ -14,6 +14,7 @@ const BlobCanvas = dynamic(() => import('./blob-canvas').then((m) => m.BlobCanva
 export const Footer = () => {
   const wordmarkRef = useRef<HTMLDivElement>(null);
   const isInView = useInView(wordmarkRef, { once: true, margin: '-40px' });
+  const prefersReducedMotion = useReducedMotion();
   const [email, setEmail] = useState('');
 
   const handleNewsletter = (e: FormEvent) => {
@@ -145,11 +146,6 @@ export const Footer = () => {
                     Dashboard
                   </Link>
                 </li>
-                <li>
-                  <Link href="/login" className="text-sm text-slate-300 transition-colors hover:text-white hover:underline underline-offset-4">
-                    Log in
-                  </Link>
-                </li>
               </ul>
             </nav>
 
@@ -211,17 +207,18 @@ export const Footer = () => {
             <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/20 via-transparent to-slate-950/55" />
           </div>
 
+          <span className="sr-only">Reviveo</span>
           <div
+            aria-hidden="true"
             className="relative z-10 flex select-none items-center justify-between gap-1 font-black tracking-[-0.06em] leading-none text-blue-500 drop-shadow-[0_2px_18px_rgba(62,122,238,0.4)]"
-            aria-label="REVIVEO"
           >
             {letters.map((ch, i) => (
               <motion.span
                 key={`${ch}-${i}`}
                 custom={i}
                 variants={letterVariants}
-                initial="hidden"
-                animate={isInView ? 'visible' : 'hidden'}
+                initial={prefersReducedMotion ? 'visible' : 'hidden'}
+                animate={prefersReducedMotion || isInView ? 'visible' : 'hidden'}
                 className="inline-block text-[15vw] sm:text-[13.5vw] md:text-[12.5vw] lg:text-[150px] xl:text-[190px] 2xl:text-[220px]"
                 style={{ display: 'inline-block', overflow: 'hidden' }}
               >
@@ -235,10 +232,10 @@ export const Footer = () => {
         <div className="flex flex-col-reverse gap-3 py-5 text-sm md:flex-row md:items-center md:justify-between">
           <span className="text-slate-400">© {new Date().getFullYear()} Reviveo. All rights reserved.</span>
           <div className="flex items-center gap-6">
-            <a href="#" className="font-medium text-slate-300 hover:text-white transition-colors">
+            <a href="/privacy" className="font-medium text-slate-300 hover:text-white transition-colors">
               Privacy Policy
             </a>
-            <a href="#" className="font-medium text-slate-300 hover:text-white transition-colors">
+            <a href="/terms" className="font-medium text-slate-300 hover:text-white transition-colors">
               Terms of Service
             </a>
           </div>

@@ -5,7 +5,7 @@ import { SpotlightCard4 } from '@/components/homepage/spotlight-card-4';
 export function ProductHighlights() {
   return (
     <section className="bg-slate-950 py-24">
-      <div className="mx-auto max-w-6xl px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl px-6 lg:px-8">
         <div className="mx-auto max-w-2xl text-center">
           <p className="text-sm font-bold uppercase tracking-[0.18em] text-blue-400">
             Why teams choose Reviveo

@@ -5,6 +5,7 @@ import {
   motion,
   useAnimationFrame,
   useMotionValue,
+  useReducedMotion,
   useTransform,
 } from 'framer-motion';
 import { useEffect, useRef, useState } from 'react';
@@ -30,18 +31,6 @@ const merchants: Merchant[] = [
     color: '#FC8019',
   },
   {
-    id: 'aws',
-    label: 'AWS',
-    logo: '/partners/aws.png',
-    color: '#FF9900',
-  },
-  {
-    id: 'claude',
-    label: 'Claude',
-    logo: '/partners/claude.png',
-    color: '#D97706',
-  },
-  {
     id: 'prime-video',
     label: 'Prime Video',
     logo: '/partners/prime-video.png',
@@ -64,6 +53,22 @@ export function IntegrationCarousel() {
   const rotation = useMotionValue(0);
 
   const [isPaused, setIsPaused] = useState(false);
+  const prefersReducedMotion = useReducedMotion();
+
+  /**
+   * Every orbit position/scale/opacity below is derived from Math.sin/Math.cos.
+   * Those aren't guaranteed to return bit-identical floats between Node (SSR)
+   * and the browser's JS engine — the spec only requires an "approximated"
+   * result for transcendental functions. That tiny drift (e.g. 31.5 vs
+   * 31.499999999999982) was enough to trip React's hydration check on every
+   * orbiting logo's inline style. Since the layout only matters once it's
+   * actually spinning, skip rendering it until after mount — nothing
+   * meaningful to hydrate, nothing to mismatch.
+   */
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   /**
    * IMPORTANT:
@@ -77,7 +82,7 @@ export function IntegrationCarousel() {
    * discontinuities / jerks.
    */
   useAnimationFrame((_, delta) => {
-    if (isPaused) return;
+    if (isPaused || prefersReducedMotion) return;
 
     const speed = TAU / (ORBIT_DURATION * 1000);
 
@@ -91,20 +96,20 @@ export function IntegrationCarousel() {
           {/* LEFT CONTENT */}
           <div className="relative z-10 max-w-xl">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-blue-400">
-              Built for recovery
+              Built for subscription businesses
             </p>
 
             <h2 className="mt-4 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-              Connect your payment
+              Failed payments happen
               <span className="block text-white/45">
-                ecosystem to Reviveo.
+                everywhere subscriptions do.
               </span>
             </h2>
 
             <p className="mt-6 max-w-lg text-base leading-7 text-zinc-400">
-              Reviveo connects with your existing payment and commerce stack,
-              detects failed payments, and orchestrates the right recovery
-              action automatically.
+              Streaming, food delivery, edtech, or anything billed on a recurring
+              cycle — a single failed payment can quietly turn into a lost
+              customer. Reviveo is built for exactly this category of business.
             </p>
           </div>
 
@@ -179,15 +184,16 @@ export function IntegrationCarousel() {
 
             {/* ORBITING LOGOS */}
 
-            {merchants.map((merchant, index) => (
-              <OrbitalMerchant
-                key={merchant.id}
-                merchant={merchant}
-                index={index}
-                total={merchants.length}
-                rotation={rotation}
-              />
-            ))}
+            {mounted &&
+              merchants.map((merchant, index) => (
+                <OrbitalMerchant
+                  key={merchant.id}
+                  merchant={merchant}
+                  index={index}
+                  total={merchants.length}
+                  rotation={rotation}
+                />
+              ))}
 
             {/* CENTER NODE */}
 
@@ -220,7 +226,7 @@ export function IntegrationCarousel() {
             {/* subtle label */}
 
             <div className="pointer-events-none absolute bottom-5 left-1/2 z-40 -translate-x-1/2 whitespace-nowrap text-[11px] tracking-[0.08em] text-zinc-600">
-              CONNECTED PAYMENT ECOSYSTEM
+              THE KIND OF BUSINESSES THIS HAPPENS TO
             </div>
           </div>
         </div>

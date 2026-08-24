@@ -60,7 +60,8 @@ export default function Home() {
             <Button
               asChild
               size="lg"
-              className="mt-9 h-16 rounded-xl bg-gradient-to-r from-blue-700 to-blue-600 px-8 text-base"
+              variant="brand"
+              className="mt-9 h-16 rounded-xl px-8 text-base"
             >
               <Link href="/dashboard">
                 View Dashboard

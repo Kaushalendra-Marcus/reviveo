@@ -4,6 +4,7 @@ import React, { useMemo, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { MathUtils, Vector3, Color } from 'three';
 import * as THREE from 'three';
+import { useReducedMotion } from 'framer-motion';
 
 const vertexShader = `
 uniform float u_intensity;
@@ -102,6 +103,7 @@ const REVIVEO_BLUE_DEEP = '#2563eb';
 const Blob: React.FC<{ color?: string }> = ({ color = REVIVEO_BLUE }) => {
   const mesh = useRef<THREE.Mesh>(null);
   const hover = useRef(false);
+  const prefersReducedMotion = useReducedMotion();
 
   const uniforms = useMemo(
     () => ({
@@ -119,6 +121,12 @@ const Blob: React.FC<{ color?: string }> = ({ color = REVIVEO_BLUE }) => {
     const { clock, mouse } = state;
     if (mesh.current) {
       const material = mesh.current.material as THREE.ShaderMaterial;
+      if (prefersReducedMotion) {
+        // Freeze the noise animation and mouse-follow entirely — still
+        // renders the static shape, just without continuous motion.
+        material.uniforms.u_intensity.value = 0.42;
+        return;
+      }
       material.uniforms.u_time.value = 0.4 * clock.getElapsedTime();
       material.uniforms.u_intensity.value = MathUtils.lerp(
         material.uniforms.u_intensity.value,

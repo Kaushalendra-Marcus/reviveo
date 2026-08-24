@@ -4,8 +4,8 @@ import { Spotlight, SpotLightItem } from '@/components/ui/spotlight';
 
 export function SpotlightCards() {
   return (
-    <section className="bg-[#1a1a1a] py-12 sm:py-16">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+    <section className="bg-[#1a1a1a] py-16 sm:py-24">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="rounded-2xl bg-black p-3 sm:p-5">
           <Spotlight className="grid grid-cols-6 gap-3 auto-rows-[132px] sm:auto-rows-[148px]">
             {/* Top left — area chart with dot 2.5% */}
@@ -79,9 +79,9 @@ export function SpotlightCards() {
                   ))}
                 </div>
                 <div className="pt-4 text-center">
-                  <h3 className="text-base font-semibold text-white transition-colors duration-300 group-hover:text-blue-100 sm:text-lg">Track Goals</h3>
-                  <p className="mx-auto mt-1.5 max-w-[32ch] text-[11px] leading-4 text-zinc-400 transition-colors duration-300 group-hover:text-zinc-200 sm:text-xs sm:leading-5">
-                    Keeping track of your goals helps you stay organized, motivated, and focused. Regularly monitoring your progress ensures you stay on course.
+                  <h3 className="text-base font-semibold text-white transition-colors duration-300 group-hover:text-blue-100 sm:text-lg">Recovery Rate</h3>
+                  <p className="mx-auto mt-1.5 max-w-[32ch] text-[11px] leading-4 text-slate-400 transition-colors duration-300 group-hover:text-slate-200 sm:text-xs sm:leading-5">
+                    See exactly how much of your at-risk revenue is being recovered, broken down by strategy and updated as outcomes come in.
                   </p>
                 </div>
               </div>

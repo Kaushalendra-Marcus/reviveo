@@ -84,7 +84,7 @@ export const SiteNav = () => {
           <Button
             asChild
             size="sm"
-            className="rounded-xl bg-gradient-to-r from-blue-700 to-blue-600"
+            variant="brand"
           >
             <Link href="/dashboard">
               View Dashboard
@@ -143,16 +143,9 @@ export const SiteNav = () => {
             <div className="flex items-center gap-2">
               <Button
                 asChild
-                variant="ghost"
                 size="sm"
-                className="font-medium text-slate-700"
-              >
-                <Link href="/login">Log in</Link>
-              </Button>
-              <Button
-                asChild
-                size="sm"
-                className="rounded-lg bg-gradient-to-r from-blue-700 to-blue-600 hover:from-blue-800 hover:to-blue-700"
+                variant="brand"
+                className="rounded-lg"
               >
                 <Link href="/dashboard">
                   View Dashboard

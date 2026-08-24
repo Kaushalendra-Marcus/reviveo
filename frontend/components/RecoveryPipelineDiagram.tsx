@@ -147,7 +147,7 @@ export const PIPELINE_NODES: NodeConfig[] = [
   {
     id: "payment", x: 610, y: 496, w: 340, h: 172,
     title: "Payment Result",
-    subtitle: "Tracks the outcome of the recovery attempt\nagainst the ORIGINAL failed payment —\nnot just any later payment from the customer.",
+    subtitle: "Tracks the outcome of the recovery attempt\nagainst the original failed payment —\nnot just any later payment from the customer.",
     icon: "payment", category: "blue",
   },
   {

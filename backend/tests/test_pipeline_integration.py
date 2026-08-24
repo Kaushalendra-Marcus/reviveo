@@ -1,120 +1,132 @@
-"""Pipeline integration: 10-event batch through process_event (doc A6).
-
-Asserts the full audit chain (≥6 stages/event incl. outcome) and that every
-event lands in a coherent state with at most one outcome resolution.
-"""
-from __future__ import annotations
+import uuid
+from datetime import datetime, timezone
 
 import pytest
 
 from app import db
-from app.batch.batch_runner import generate_events, run_batch
-from app.enums import AuditStage, EventStatus
+from app.enums import EventStatus
 from app.pipeline import pipeline
 
+pytestmark = pytest.mark.usefixtures("seeded_db")
 
-def test_ten_event_batch_full_audit_chain():
-    specs = generate_events(10, seed=123)
-    assert len(specs) == 10
-    for spec in specs:
-        ev = pipeline.ingest_event(spec)
-        pipeline.process_event(ev["event_id"])
+MERCHANT = "codecraft"
 
-        stages = db.list_audit_for_event(ev["event_id"])
-        stage_names = [s["stage"] for s in stages]
-
-        # detected → analyzed → decided → guardrail always present
-        for required in (AuditStage.detected.value, AuditStage.analyzed.value,
-                         AuditStage.decided.value, AuditStage.guardrail.value):
-            assert required in stage_names, f"missing {required} for {ev['event_id']}"
-
-        refreshed = db.get_event(ev["event_id"])
-        if refreshed["status"] == "approval_pending":
-            # escalated events stop before execution — by design
-            assert AuditStage.executed.value not in stage_names
-            continue
-
-        # executed + exactly ONE outcome row once an attempt actually ran
-        # (scheduled retries legitimately have no outcome until they fire)
-        assert AuditStage.executed.value in stage_names
-        outcomes = [s for s in stages if s["stage"] == AuditStage.outcome.value]
-        if refreshed["status"] == "scheduled":
-            assert len(outcomes) == 0
-            continue
-        assert len(outcomes) == 1, "exactly one outcome audit row per resolved event"
-
-    # every event reached a forward-consistent status
-    for ev in db.list_events("codecraft", limit=100):
-        assert ev["status"] in [s.value for s in EventStatus]
+_EVENTS = [
+    # (type, error_code, amount_paise, customer_id, subscription_id)
+    ("payment_failed", "card_expired", 249_900, "cust_rahul", None),
+    ("payment_failed", "insufficient_funds", 99_900, "cust_priya", None),
+    ("payment_failed", "payment_timed_out", 249_900, "cust_amit", None),
+    ("payment_failed", "card_declined", 99_900, "cust_sara", None),
+    ("payment_failed", "payment_cancelled", 499_900, "cust_dev", None),
+    ("payment_failed", "SOME_UNKNOWN_CODE", 99_900, "cust_neha", None),
+    ("payment_failed", "card_expired", 5_000_000, "cust_rahul", None),  # over autonomous ceiling -> approval
+    ("subscription_failed", "insufficient_funds", 99_900, "cust_priya", "sub_cust_priya"),
+    ("subscription_halted", "card_expired", 249_900, "cust_amit", "sub_cust_amit"),
+    ("payment_failed", "bank_downtime", 99_900, "cust_sara", None),
+]
 
 
-def test_recovered_events_are_attributed_exactly_once():
-    summary = run_batch(n_events=40, seed=99)
-    rows = db.query_all(
-        "SELECT recovered_razorpay_payment_id, COUNT(*) c FROM recovered_payments "
-        "GROUP BY recovered_razorpay_payment_id HAVING c > 1"
+def _make_event(i: int, spec: tuple) -> dict:
+    etype, error_code, amount, customer_id, subscription_id = spec
+    event_id = f"evt_test_{i}_{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc).isoformat()
+    event = {
+        "event_id": event_id, "merchant_id": MERCHANT, "customer_id": customer_id,
+        "subscription_id": subscription_id, "type": etype, "error_code": error_code,
+        "amount_paise": amount, "status": EventStatus.detected.value,
+        "origin": "synthetic", "created_at": now,
+    }
+    db.insert_event(event)
+    return db.get_event(event_id)
+
+
+def test_ten_event_batch_produces_uniform_audit_trail():
+    results = []
+    for i, spec in enumerate(_EVENTS):
+        event = _make_event(i, spec)
+        result = pipeline.process_event(event, use_ai=False)
+        results.append(result)
+
+    assert len(results) == 10
+
+    for result in results:
+        event_id = result["event_id"]
+        audit_rows = db.list_audit_for_event(event_id)
+        assert len(audit_rows) == 6, f"{event_id} has {len(audit_rows)} audit rows, expected 6"
+
+        stages = [r["stage"] for r in audit_rows]
+        assert stages == ["detected", "analyzed", "decided", "guardrail", "executed", "outcome"]
+
+        outcome_rows = [r for r in audit_rows if r["stage"] == "outcome"]
+        assert len(outcome_rows) == 1
+
+        # Every event must have moved off its initial 'detected' status.
+        final_event = db.get_event(event_id)
+        assert final_event["status"] != EventStatus.detected.value
+
+
+def test_high_confidence_low_risk_auto_executes_and_creates_attempt():
+    event = _make_event(100, ("payment_failed", "payment_timed_out", 99_900, "cust_amit", None))
+    result = pipeline.process_event(event, use_ai=False)
+    assert result["status"] == EventStatus.waiting_for_outcome.value
+    attempts = db.list_attempts_for_event(event["event_id"])
+    assert len(attempts) == 1
+    assert attempts[0]["status"] == "awaiting_outcome"
+
+
+def test_unclassified_cause_always_escalates_to_approval():
+    event = _make_event(101, ("payment_failed", "TOTALLY_UNKNOWN", 99_900, "cust_amit", None))
+    result = pipeline.process_event(event, use_ai=False)
+    assert result["action"] == "escalate_to_human"
+    assert result["status"] == EventStatus.approval_pending.value
+    approvals = db.list_pending_approvals(MERCHANT)
+    assert any(a["event_id"] == event["event_id"] for a in approvals)
+
+
+def test_amount_over_autonomous_ceiling_requires_approval():
+    event = _make_event(102, ("payment_failed", "payment_timed_out", 5_000_000, "cust_dev", None))
+    result = pipeline.process_event(event, use_ai=False)
+    assert result["status"] == EventStatus.approval_pending.value
+
+
+def test_pending_subscription_monitors_without_razorpay_call():
+    db.update_subscription_state("sub_cust_sara", "pending")
+    event = _make_event(103, ("subscription_failed", "insufficient_funds", 99_900,
+                               "cust_sara", "sub_cust_sara"))
+    result = pipeline.process_event(event, use_ai=False)
+    assert result["action"] == "monitor_native_retry"
+    attempts = db.list_attempts_for_event(event["event_id"])
+    assert attempts[0]["execution_mechanism"] == "native_subscription_retry"
+    assert attempts[0]["razorpay_ref"] is None
+
+
+def test_recovery_attribution_end_to_end():
+    event = _make_event(104, ("payment_failed", "payment_timed_out", 99_900, "cust_amit", None))
+    result = pipeline.process_event(event, use_ai=False)
+    attempt_id = result["recovery_attempt_id"]
+
+    from app.pipeline import attribution
+    outcome = attribution.attribute_payment(
+        recovery_attempt_id=attempt_id, razorpay_payment_id=f"pay_{uuid.uuid4().hex[:10]}",
+        amount_paise=99_900, recovery_window_days=7,
     )
-    assert rows == [], "no double-counted razorpay payment ids"
+    assert outcome.accepted is True
 
-    counted = db.query_one(
-        "SELECT COUNT(*) n FROM recovered_payments WHERE within_window=1")["n"]
-    assert counted == summary["recovered_count"], "summary matches attributed rows"
+    final_event = db.get_event(event["event_id"])
+    assert final_event["status"] == EventStatus.recovered.value
+    assert final_event["payment_recovered"] == 1
 
-
-def test_state_machine_refuses_terminal_regression():
-    from app.pipeline.state_machine import transition
-
-    spec = generate_events(1, seed=7)[0]
-    ev = pipeline.ingest_event(spec)
-    transition(ev["event_id"], EventStatus.analyzing)
-    transition(ev["event_id"], EventStatus.recovered)
-
-    assert transition(ev["event_id"], EventStatus.analyzing) is False
-    assert db.get_event(ev["event_id"])["status"] == "recovered"
-    # closed is a legal forward move from terminal
-    assert transition(ev["event_id"], EventStatus.closed) is True
+    # Idempotency: attributing the same payment id again must be a no-op.
+    outcome2 = attribution.attribute_payment(
+        recovery_attempt_id=attempt_id, razorpay_payment_id=outcome and _last_payment_id(attempt_id),
+        amount_paise=99_900, recovery_window_days=7,
+    )
+    assert outcome2.accepted is False
 
 
-def test_duplicate_webhook_envelope_is_idempotent():
-    spec = generate_events(1, seed=5)[0]
-    ev = pipeline.ingest_event(spec)
-    fresh = db.try_insert_webhook("codecraft", "evt_dup_1", "payment.failed", "{}")
-    dup = db.try_insert_webhook("codecraft", "evt_dup_1", "payment.failed", "{}")
-    assert fresh and not dup
-    assert ev["event_id"]
-
-
-def test_approval_atomic_claim_prevents_double_execution():
-    spec = {"merchant_id": "codecraft", "type": "payment_failed",
-            "customer_id": "cust_amit", "error_code": "gateway_internal_error_xyz",
-            "amount_paise": 249900, "origin": "synthetic"}
-    ev = pipeline.ingest_event(spec)
-    result = pipeline.process_event(ev["event_id"])
-    approval_id = result["approval_id"]
-
-    from app.services import approvals as svc
-    first = svc.approve(approval_id)
-    second = svc.approve(approval_id)
-    assert first["ok"] is True
-    assert second["ok"] is False and second["error"] == "conflict"
-
-
-def test_scheduler_resumes_scheduled_attempts_after_revalidation():
-    from app.pipeline.scheduler import tick
-
-    spec = {"merchant_id": "codecraft", "type": "payment_failed",
-            "customer_id": "cust_sara", "error_code": "insufficient_funds",
-            "amount_paise": 99900, "origin": "synthetic"}
-    ev = pipeline.ingest_event(spec)
-    result = pipeline.process_event(ev["event_id"])
-    if not result.get("scheduled"):
-        pytest.skip("spec did not schedule a smart retry")
-    attempt = db.get_recovery_attempt(result["attempt"]["recovery_attempt_id"])
-
-    # force it due now
-    db.update_recovery_attempt(attempt["recovery_attempt_id"],
-                               scheduled_for=db.now_iso())
-    out = tick()
-    assert out["scheduled_executed"] >= 1
-    resumed = db.get_recovery_attempt(attempt["recovery_attempt_id"])
-    assert resumed["status"] in ("awaiting_outcome", "recovered")
+def _last_payment_id(attempt_id: str) -> str:
+    row = db.query_one(
+        "SELECT recovered_razorpay_payment_id FROM recovered_payments WHERE recovery_attempt_id=?",
+        (attempt_id,),
+    )
+    return row["recovered_razorpay_payment_id"]

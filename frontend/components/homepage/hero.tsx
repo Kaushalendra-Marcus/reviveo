@@ -22,7 +22,7 @@ export const Hero = () => {
   return (
     <section
       ref={timelineRef}
-      className="relative min-h-dvh overflow-hidden bg-slate-950 text-slate-950"
+      className="relative min-h-dvh overflow-hidden bg-slate-950 text-white"
     >
       {/* Background image (same asset the previous hero used) — soft fade/zoom-settle
           on entrance, then a slow, barely-visible ambient drift so the scene feels
@@ -119,7 +119,8 @@ export const Hero = () => {
           <Button
             asChild
             size="lg"
-            className="h-16 rounded-xl bg-gradient-to-r from-blue-700 to-blue-600 px-8 text-base shadow-xl shadow-blue-500/25 hover:from-blue-800 hover:to-blue-700"
+            variant="brand"
+            className="h-16 rounded-xl px-8 text-base"
           >
             <Link href="/dashboard">
               Start Recovering Revenue
