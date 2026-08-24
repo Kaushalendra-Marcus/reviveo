@@ -1,18 +1,14 @@
 """Deterministic guardrails — enforcement boundary (doc §3.10, C4).
 
-Compatibility shim for `agent/tools.py` and legacy callers that import
-`app.guardrails.guardrails.evaluate`. Live enforcement is
-`app.domain.guardrails.check_guardrails` (retry-scoped cooldown, contact
-caps per retry-style actions). This shim now delegates to that canonical
-implementation so both paths share the same policy and the double-stack
-divergence is eliminated (AUDIT_REPORT.md §Agent double-stack fixed
-2026-08-24). New code should import `domain.guardrails.check_guardrails`
-directly.
+Compatibility shim for `agent/tools.py` and any legacy import of
+`app.guardrails.guardrails.evaluate`. The live enforcement point is
+`app.domain.guardrails.check_guardrails` — this shim delegates there so
+the two implementations are no longer divergent (single source of truth).
+New code should import `domain.guardrails.check_guardrails` directly.
 
 The agent may propose, but these checks decide. Every check reads live state
 (attempts, counters, config) from the DB; nothing here trusts caller-supplied
-"current values". `escalate_to_human` always passes: escalation is never a
-financially dangerous action.
+"current values". `escalate_to_human` always passes.
 """
 from __future__ import annotations
 
