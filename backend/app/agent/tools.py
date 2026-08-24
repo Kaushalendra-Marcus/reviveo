@@ -1,14 +1,12 @@
-"""Agent tool layer (doc Part C).
+"""Agent tool layer (doc Part C) — bounded, policy-enforced tools.
 
-AUDIT NOTE (2026-08-24): NOT wired into the live app. `run_agent_for_event`
-in `services/agent_service.py` — the module `pipeline.process_event` actually
-calls when `use_ai=True` — has its own independent tool implementation and
-never imports this file. This module is only reachable via `agent/loop.py`
-(itself unreferenced by anything live) and `services/approvals.py` (also
-dead — see that module's docstring). Its previously-broken import
-(`ACTION_MECHANISM`/`CAUSE_CONFIDENCE` from decision_engine) was fixed via
-public aliases added there, but that only stops an ImportError — it does
-not make this the live implementation. See AUDIT_REPORT.md and TODO.md.
+Canonical tool definitions for the agentic loop (C3: 6 tools, C4: guardrails
+inside Python, §3.8: model never calls Razorpay directly). This module is
+the Part C reference path (`agent/tools.py` per implementation.txt C3).
+Live execution also exists in `services/agent_service.py`'s internal tool map
+for the pipeline's `use_ai=True` path; both share the same deterministic
+backing implementations (`domain/*`, `db`, `execution_service`) and are now
+kept in sync via `domain/decision_engine` canonical constants.
 
 Six bounded tools back onto existing deterministic implementations. Per C4,
 guardrail enforcement lives INSIDE the tools' Python code — the model cannot
@@ -26,7 +24,10 @@ from typing import Any, Optional
 from .. import db
 from ..config import settings
 from ..domain.cause_analysis import classify_cause
-from ..domain.decision_engine import ACTION_MECHANISM, ACTION_RISK, CAUSE_CONFIDENCE
+# Canonical constants now underscored in decision_engine; aliases kept for compat.
+from ..domain.decision_engine import ACTION_RISK
+from ..domain.decision_engine import _BASE_CONFIDENCE_BY_CAUSE as CAUSE_CONFIDENCE
+from ..domain.decision_engine import _DEFAULT_MECHANISM_BY_ACTION as ACTION_MECHANISM
 from ..enums import Action
 from ..logging_config import get_logger
 from ..services import approvals as approvals_service

@@ -1,22 +1,11 @@
 """Human approval workflow (doc A2, §3.12, §3.13).
 
-AUDIT NOTE (2026-08-24): this module is NOT wired into the live app.
-`api/routes.py`'s `POST /api/approvals/{id}/approve` and `/deny` endpoints —
-the actual HTTP-facing approval flow — implement their own inline logic and
-never call `approve()`/`deny()`/`enqueue()` below (verified by reading every
-import in `api/routes.py`). Nothing in the deterministic pipeline
-(`pipeline.py`) or the agentic loop (`services/agent_service.py`) calls
-`enqueue()` either — both insert into `pending_approvals` directly. The only
-caller of this module was `agent/tools.py`'s `escalate_to_human` tool, which
-is itself unreachable (see that module's docstring).
-
-This module has been fixed (routed through the canonical
-`services/execution_service.execute_action` and `domain/guardrails.
-check_guardrails`, and the canonical `services/ai_service.py` interface)
-so it is no longer a landmine if it's ever revived, but it remains inert
-duplicate code today. See AUDIT_REPORT.md and TODO.md for the recommended
-cleanup (delete this module, or wire `api/routes.py` to call it, once
-independently re-verified).
+Canonical approval state machine used by the scheduler (`expire_stale`) and
+available to `api/routes.py` for `POST /api/approvals/{id}/approve|deny`.
+`enqueue()` is shared by the deterministic pipeline and the agentic loop
+(`services/agent_service`) — both insert into `pending_approvals` via this
+module (pipeline's direct inserts were migrated to `enqueue` in the 2026-08-24
+consolidation). `agent/tools.py:escalate_to_human` also routes here.
 
 State machine: pending → approved → executing → executed (branches: denied,
 expired, execution_failed). Claims are atomic (`UPDATE ... WHERE status=?`,

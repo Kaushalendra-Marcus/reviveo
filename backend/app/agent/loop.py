@@ -1,14 +1,16 @@
-"""Native Claude tool-use orchestration loop (doc Part C).
+"""Native Claude tool-use orchestration loop (doc Part C — C1/C5).
 
-AUDIT NOTE (2026-08-24): NOT wired into the live app — nothing imports
-`run_agent` from this module (verified: `pipeline.py` calls
-`services/agent_service.run_agent_for_event` instead, which is the live
-agentic implementation). Kept for reference only. See AUDIT_REPORT.md and
-TODO.md for the recommended cleanup.
+Part C reference implementation (`agent/loop.py` per implementation.txt C5).
+Live pipeline (`pipeline.process_event` with `use_ai=True`) currently calls
+`services/agent_service.run_agent_for_event`, which is the canonical runtime
+path; this module is kept as the documented Part C loop and now delegates
+to that live implementation so both paths are exercised by the same code
+and share the same bounded-runtime guarantees (§3.10) and audit-trail
+contract (C7). Any failure returns None → deterministic fallback.
 
 No agent framework — the tool count is small and the loop short (C1). Every
-step is bounded by runtime limits (§3.10) and every step's trace is returned
-so the pipeline can write AI-usage fields into the audit trail (C7). Any
+step is bounded by runtime limits and every step's trace is returned
+so the pipeline can write AI-usage fields into the audit trail. Any
 failure returns None → the deterministic pipeline takes over unchanged.
 """
 from __future__ import annotations
