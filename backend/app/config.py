@@ -31,9 +31,9 @@ class Settings(BaseSettings):
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
 
-    anthropic_api_key: str = ""
-    ai_model_fast: str = "claude-haiku-4-5-20251001"
-    ai_model_summary: str = "claude-sonnet-5"
+    groq_api_key: str = ""
+    ai_model_fast: str = "qwen/qwen3.8-27b"
+    ai_model_summary: str = "qwen/qwen3.8-27b"
 
     frontend_origin: str = "http://localhost:3000"
 
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     @property
     def ai_configured(self) -> bool:
-        return bool(self.anthropic_api_key)
+        return bool(self.groq_api_key)
 
 
 @lru_cache

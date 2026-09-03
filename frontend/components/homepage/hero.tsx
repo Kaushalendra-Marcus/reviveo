@@ -10,6 +10,7 @@ import {
   LockKeyhole,
   Play,
   ShieldCheck,
+  Zap,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -146,6 +147,13 @@ export const Hero = () => {
           timelineRef={timelineRef}
           className="mt-6 flex flex-wrap items-center justify-center gap-x-8 gap-y-4 text-sm font-medium text-slate-300"
         >
+          <div className="flex items-center gap-2">
+            <Zap className="size-5 text-blue-400" />
+            <span>Built on Razorpay — test mode verified</span>
+          </div>
+
+          <span className="hidden size-1 rounded-full bg-slate-500 sm:block" />
+
           <div className="flex items-center gap-2">
             <ShieldCheck className="size-5 text-blue-400" />
             <span>Enterprise-grade security</span>

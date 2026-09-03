@@ -414,6 +414,7 @@ export type RangeDays = 7 | 30 | 90;
 export interface EventsQuery {
   status?: EventStatus | "";
   cause?: Cause | "";
+  origin?: DataOrigin | "";
   page?: number;
   pageSize?: number;
 }

@@ -5,8 +5,9 @@ the deterministic pipeline uses (doc C4: guardrail logic lives inside the
 tool's Python code, never in the model's judgment), so the safety
 guarantees are identical either way; only who drives the sequence changes.
 
-No agent framework (doc C1) — native Claude tool_use, 6 tools, a short loop
-bounded by MAX_AGENT_STEPS_PER_EVENT / MAX_TOOL_CALLS_PER_EVENT /
+No agent framework (doc C1) — native Groq tool-calling (OpenAI-compatible
+function calling), 6 tools, a short loop bounded by
+MAX_AGENT_STEPS_PER_EVENT / MAX_TOOL_CALLS_PER_EVENT /
 MAX_AGENT_WALL_TIME_SECONDS (doc §3.10). If the model stalls, loops, or the
 API call fails outright, the loop always resolves to an escalation rather
 than ever leaving an event stuck (doc C9/C10 — "what happens if the AI call
@@ -29,8 +30,11 @@ logger = get_logger("reviveo.agent_service")
 
 AGENT_VERSION = "agent-v1"
 
-# doc C3 — exactly these six tools.
-_TOOLS = [
+# doc C3 — exactly these six tools, written once in the provider-neutral
+# {name, description, input_schema} shape and wrapped below into Groq's
+# OpenAI-compatible {"type": "function", "function": {...}} shape — keeping
+# one source of truth avoids retyping six schemas by hand on a provider swap.
+_TOOLS_RAW = [
     {
         "name": "get_customer_history",
         "description": (
@@ -127,6 +131,18 @@ _TOOLS = [
     },
 ]
 
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        },
+    }
+    for t in _TOOLS_RAW
+]
+
 _SYSTEM_PROMPT = (
     "You are Reviveo, an AI revenue-recovery agent for a Razorpay merchant. You are given "
     "one failed-payment event and must decide how to recover it, using only the tools "
@@ -182,15 +198,18 @@ def run_agent_for_event(*, event: dict, cfg: dict, audit: Callable[..., None]) -
     ctx = _AgentContext(event, cfg, customer, subscription)
 
     client = ai_service.get_raw_client()
-    messages: list[dict] = [{
-        "role": "user",
-        "content": json.dumps({
-            "event_id": event["event_id"], "type": event["type"],
-            "error_code": event.get("error_code"), "amount_paise": event["amount_paise"],
-            "customer_id": event.get("customer_id"),
-            "subscription_state": subscription["state"] if subscription else None,
-        }),
-    }]
+    messages: list[dict] = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": json.dumps({
+                "event_id": event["event_id"], "type": event["type"],
+                "error_code": event.get("error_code"), "amount_paise": event["amount_paise"],
+                "customer_id": event.get("customer_id"),
+                "subscription_state": subscription["state"] if subscription else None,
+            }),
+        },
+    ]
 
     start = time.monotonic()
     steps = 0
@@ -208,34 +227,44 @@ def run_agent_for_event(*, event: dict, cfg: dict, audit: Callable[..., None]) -
 
         steps += 1
         try:
-            resp = client.messages.create(
-                model=settings.ai_model_fast, max_tokens=1024, system=_SYSTEM_PROMPT,
-                tools=_TOOLS, messages=messages,
+            resp = client.chat.completions.create(
+                model=settings.ai_model_fast, max_completion_tokens=1024,
+                messages=messages, tools=_TOOLS, tool_choice="auto",
             )
         except Exception as exc:  # noqa: BLE001 — the agent loop must never crash the pipeline
-            logger.warning("agent Claude call failed", extra={"context": {"error": str(exc)}})
+            logger.warning("agent Groq call failed", extra={"context": {"error": str(exc)}})
             _force_escalate(ctx, merchant_id, f"AI call failed: {exc}", audit)
             break
 
-        messages.append({"role": "assistant", "content": resp.content})
-        tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
+        msg = resp.choices[0].message
+        tool_calls = msg.tool_calls or []
+        messages.append({
+            "role": "assistant",
+            "content": msg.content,
+            **({"tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in tool_calls
+            ]} if tool_calls else {}),
+        })
 
-        if not tool_uses:
-            text_blocks = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-            final_text = "\n".join(t for t in text_blocks if t).strip() or None
+        if not tool_calls:
+            final_text = (msg.content or "").strip() or None
             break
 
-        tool_results = []
-        for tool_use in tool_uses:
+        for tool_call in tool_calls:
             ctx.tool_call_count += 1
-            result = _dispatch_tool(tool_use.name, tool_use.input or {}, ctx, merchant_id, audit)
-            tool_results.append({
-                "type": "tool_result", "tool_use_id": tool_use.id,
+            try:
+                args = json.loads(tool_call.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            result = _dispatch_tool(tool_call.function.name, args, ctx, merchant_id, audit)
+            messages.append({
+                "role": "tool", "tool_call_id": tool_call.id,
                 "content": json.dumps(result, default=str),
             })
             if ctx.executed:
                 break
-        messages.append({"role": "user", "content": tool_results})
 
         if ctx.executed:
             break

@@ -7,6 +7,7 @@ import { AlertTriangle, ArrowUpRight, CheckCircle2, Zap } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { MetricCard } from "@/components/shared/metric-card";
 import { RangeToggle } from "@/components/shared/range-toggle";
+import { OriginToggle, type OriginFilter } from "@/components/shared/origin-toggle";
 import { LoadingState, ErrorState } from "@/components/shared/states";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,18 +20,30 @@ import type { RangeDays } from "@/lib/types";
 
 export default function DashboardOverviewPage() {
   const [range, setRange] = useState<RangeDays>(30);
+  const [origin, setOrigin] = useState<OriginFilter>("");
 
-  const summary = useSummary(range);
-  const timeseries = useTimeseries(range);
+  const summary = useSummary(range, origin);
+  const timeseries = useTimeseries(range, origin);
   const strategyBreakdown = useStrategyBreakdown(range);
-  const recentEvents = useEvents({ page: 1, pageSize: 8 });
+  const recentEvents = useEvents({ page: 1, pageSize: 8, origin });
 
   return (
     <div>
       <PageHeader
         title="Overview"
-        description="How Reviveo is doing right now."
-        actions={<RangeToggle value={range} onChange={setRange} />}
+        description={
+          origin === "live_test_mode"
+            ? "Showing only real, Razorpay-verified events — synthetic demo data hidden."
+            : origin === "synthetic"
+            ? "Showing only synthetic demo/batch data."
+            : "How Reviveo is doing right now."
+        }
+        actions={
+          <div className="flex items-center gap-2">
+            <OriginToggle value={origin} onChange={setOrigin} />
+            <RangeToggle value={range} onChange={setRange} />
+          </div>
+        }
       />
 
       {summary.isError ? (

@@ -149,32 +149,12 @@ export const Footer = () => {
               </ul>
             </nav>
 
-            <nav aria-label="Social">
-              <h3 className="text-sm font-semibold uppercase tracking-widest text-white">Social</h3>
+            <nav aria-label="Project">
+              <h3 className="text-sm font-semibold uppercase tracking-widest text-white">Project</h3>
               <ul className="mt-4 space-y-2.5">
                 <li>
                   <a
-                    href="https://www.linkedin.com"
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-sm text-slate-300 underline underline-offset-4 decoration-white/20 hover:text-white hover:decoration-white"
-                  >
-                    LinkedIn
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="https://twitter.com"
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-sm text-slate-300 underline underline-offset-4 decoration-white/20 hover:text-white hover:decoration-white"
-                  >
-                    Twitter
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="https://github.com"
+                    href="https://github.com/Kaushalendra-Marcus/reviveo"
                     target="_blank"
                     rel="noreferrer noopener"
                     className="text-sm text-slate-300 underline underline-offset-4 decoration-white/20 hover:text-white hover:decoration-white"

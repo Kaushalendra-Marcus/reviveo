@@ -8,7 +8,7 @@ import { EventTable } from "@/components/events/event-table";
 import { Pagination } from "@/components/shared/pagination";
 import { LoadingState, ErrorState } from "@/components/shared/states";
 import { useEvents } from "@/hooks/api";
-import type { Cause, EventStatus } from "@/lib/types";
+import type { Cause, DataOrigin, EventStatus } from "@/lib/types";
 
 const PAGE_SIZE = 20;
 
@@ -18,6 +18,7 @@ export function EventsPageClient() {
 
   const status = (searchParams.get("status") as EventStatus | null) ?? "";
   const cause = (searchParams.get("cause") as Cause | null) ?? "";
+  const origin = (searchParams.get("origin") as DataOrigin | null) ?? "";
   const page = Number(searchParams.get("page") ?? "1") || 1;
 
   const updateParams = useCallback(
@@ -32,7 +33,7 @@ export function EventsPageClient() {
     [router, searchParams]
   );
 
-  const { data, isLoading, isError, refetch } = useEvents({ status, cause, page, pageSize: PAGE_SIZE });
+  const { data, isLoading, isError, refetch } = useEvents({ status, cause, origin, page, pageSize: PAGE_SIZE });
 
   return (
     <div>
@@ -40,8 +41,10 @@ export function EventsPageClient() {
         <EventsToolbar
           status={status}
           cause={cause}
+          origin={origin}
           onStatusChange={(s) => updateParams({ status: s, page: 1 })}
           onCauseChange={(c) => updateParams({ cause: c, page: 1 })}
+          onOriginChange={(o) => updateParams({ origin: o, page: 1 })}
         />
       </div>
 

@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { CAUSE_LABELS } from "@/lib/formatters";
 import { downloadExport } from "@/lib/api";
 import { toast } from "sonner";
-import type { Cause, EventStatus } from "@/lib/types";
+import type { Cause, DataOrigin, EventStatus } from "@/lib/types";
 
 const STATUS_OPTIONS: EventStatus[] = [
   "detected",
@@ -31,17 +31,26 @@ const STATUS_OPTIONS: EventStatus[] = [
 
 const CAUSE_OPTIONS = Object.keys(CAUSE_LABELS) as Cause[];
 
+const ORIGIN_OPTIONS: { value: DataOrigin; label: string }[] = [
+  { value: "live_test_mode", label: "Live (Razorpay-verified)" },
+  { value: "synthetic", label: "Synthetic (demo)" },
+];
+
 export function EventsToolbar({
   status,
   cause,
+  origin,
   onStatusChange,
   onCauseChange,
+  onOriginChange,
   showExport = true,
 }: {
   status: EventStatus | "";
   cause: Cause | "";
+  origin: DataOrigin | "";
   onStatusChange: (status: EventStatus | "") => void;
   onCauseChange: (cause: Cause | "") => void;
+  onOriginChange: (origin: DataOrigin | "") => void;
   showExport?: boolean;
 }) {
   async function handleExport(format: "csv" | "json") {
@@ -77,6 +86,20 @@ export function EventsToolbar({
           {CAUSE_OPTIONS.map((c) => (
             <SelectItem key={c} value={c}>
               {CAUSE_LABELS[c]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Select value={origin || "all"} onValueChange={(v) => onOriginChange(v === "all" ? "" : (v as DataOrigin))}>
+        <SelectTrigger className="h-9 w-[200px]" size="default">
+          <SelectValue placeholder="All sources" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All sources</SelectItem>
+          {ORIGIN_OPTIONS.map((o) => (
+            <SelectItem key={o.value} value={o.value}>
+              {o.label}
             </SelectItem>
           ))}
         </SelectContent>

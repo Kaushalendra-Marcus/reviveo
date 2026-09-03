@@ -84,8 +84,8 @@ export function AppHeader() {
           </TooltipTrigger>
           <TooltipContent>
             {health?.ai_configured
-              ? "Claude tool-use is configured and available for decisions."
-              : "No Anthropic key configured — decisions use the deterministic policy engine only."}
+              ? "Groq tool-use is configured and available for decisions."
+              : "No Groq key configured — decisions use the deterministic policy engine only."}
           </TooltipContent>
         </Tooltip>
       </div>

@@ -7,9 +7,12 @@ fallback_triggered so AI usage itself is auditable (doc C7) — including the
 case where a call failed and the fallback fired, which is worth being able
 to show honestly.
 
-This module is swappable to AWS Bedrock or Google Vertex AI by changing only
-the client construction in `_get_client()` (doc C2); every function's
-signature and behavior stays identical.
+Provider: Groq (OpenAI-compatible chat completions), currently defaulting to
+qwen/qwen3.8-27b (see config.py). Function names below keep their original
+`call_claude` / `get_raw_client` spelling on purpose — every call site in
+this file and in agent_service.py stays unchanged across a provider swap;
+only the client construction in `_get_client()` and the request/response
+shape inside `call_claude()` change (doc C2).
 """
 from __future__ import annotations
 
@@ -28,8 +31,8 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        import anthropic
-        _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        from groq import Groq
+        _client = Groq(api_key=settings.groq_api_key)
     return _client
 
 
@@ -52,26 +55,29 @@ class AIResult:
 
 
 def call_claude(*, system: str, user: str, model: str, max_tokens: int = 300) -> AIResult:
-    """The single call-site for the Claude API. Never raises."""
+    """The single call-site for the LLM API (Groq). Never raises."""
     if not (settings.is_live and settings.ai_configured):
         return AIResult(text=None, used=False, model=None, latency_ms=None, fallback_triggered=True)
 
     start = time.monotonic()
     try:
         client = _get_client()
-        resp = client.messages.create(
-            model=model, max_tokens=max_tokens, system=system,
-            messages=[{"role": "user", "content": user}],
+        resp = client.chat.completions.create(
+            model=model,
+            max_completion_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
         )
         latency_ms = int((time.monotonic() - start) * 1000)
-        text_parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-        text = "\n".join(t for t in text_parts if t).strip() or None
+        text = (resp.choices[0].message.content or "").strip() or None
         if text is None:
             return AIResult(text=None, used=True, model=model, latency_ms=latency_ms, fallback_triggered=True)
         return AIResult(text=text, used=True, model=model, latency_ms=latency_ms, fallback_triggered=False)
     except Exception as exc:  # noqa: BLE001 — deliberate: this wrapper must never raise
         latency_ms = int((time.monotonic() - start) * 1000)
-        logger.warning("claude call failed — falling back", extra={"context": {"error": str(exc)}})
+        logger.warning("groq call failed — falling back", extra={"context": {"error": str(exc)}})
         return AIResult(text=None, used=False, model=model, latency_ms=latency_ms, fallback_triggered=True)
 
 

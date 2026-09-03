@@ -9,6 +9,7 @@ import type {
   CombinedTimeseriesPoint,
   Customer,
   CustomersPage,
+  DataOrigin,
   EventDetail,
   EventOut,
   EventsPage,
@@ -27,8 +28,8 @@ import { api } from "@/lib/api";
 
 export const queryKeys = {
   health: ["health"] as const,
-  summary: (range: RangeDays) => ["summary", range] as const,
-  timeseries: (range: RangeDays) => ["timeseries", range] as const,
+  summary: (range: RangeDays, origin?: DataOrigin | "") => ["summary", range, origin ?? ""] as const,
+  timeseries: (range: RangeDays, origin?: DataOrigin | "") => ["timeseries", range, origin ?? ""] as const,
   strategyBreakdown: (range: RangeDays) => ["strategy-breakdown", range] as const,
   strategies: (range: RangeDays) => ["strategies", range] as const,
   events: (query: EventsQuery) => ["events", query] as const,
@@ -47,6 +48,7 @@ function buildEventsPath(query: EventsQuery): string {
   const params = new URLSearchParams();
   if (query.status) params.set("status", query.status);
   if (query.cause) params.set("cause", query.cause);
+  if (query.origin) params.set("origin", query.origin);
   params.set("page", String(query.page ?? 1));
   params.set("page_size", String(query.pageSize ?? 20));
   return `/api/events?${params.toString()}`;
@@ -54,9 +56,14 @@ function buildEventsPath(query: EventsQuery): string {
 
 /* ── raw fetchers — one function per backend/app/api/routes.py route ────── */
 export const fetchHealth = () => api.get<HealthResponse>("/health");
-export const fetchSummary = (range: RangeDays) => api.get<import("@/lib/types").SummaryResponse>(`/api/summary?range=${range}`);
-export const fetchTimeseries = (range: RangeDays, metric: "recovered" | "at_risk") =>
-  api.get<TimeseriesPoint[]>(`/api/summary/timeseries?range=${range}&metric=${metric}`);
+export const fetchSummary = (range: RangeDays, origin?: DataOrigin | "") =>
+  api.get<import("@/lib/types").SummaryResponse>(
+    `/api/summary?range=${range}${origin ? `&origin=${origin}` : ""}`
+  );
+export const fetchTimeseries = (range: RangeDays, metric: "recovered" | "at_risk", origin?: DataOrigin | "") =>
+  api.get<TimeseriesPoint[]>(
+    `/api/summary/timeseries?range=${range}&metric=${metric}${origin ? `&origin=${origin}` : ""}`
+  );
 export const fetchStrategyBreakdown = (range: RangeDays) =>
   api.get<StrategyRow[]>(`/api/summary/strategy-breakdown?range=${range}`);
 export const fetchStrategies = (range: RangeDays) => api.get<StrategyRow[]>(`/api/strategies?range=${range}`);
@@ -100,10 +107,10 @@ export const fetchLastSimulation = () => api.get<BatchRunResult | null>("/api/ba
 /** No day is guaranteed to appear in both series (a day with only at-risk
  * events and no recoveries yet only shows up in the `at_risk` series, and
  * vice versa) — union the day keys and default the missing side to 0. */
-export async function fetchCombinedTimeseries(range: RangeDays): Promise<CombinedTimeseriesPoint[]> {
+export async function fetchCombinedTimeseries(range: RangeDays, origin?: DataOrigin | ""): Promise<CombinedTimeseriesPoint[]> {
   const [recovered, atRisk] = await Promise.all([
-    fetchTimeseries(range, "recovered"),
-    fetchTimeseries(range, "at_risk"),
+    fetchTimeseries(range, "recovered", origin),
+    fetchTimeseries(range, "at_risk", origin),
   ]);
   const byDay = new Map<string, CombinedTimeseriesPoint>();
   for (const p of atRisk) byDay.set(p.day, { day: p.day, at_risk_paise: p.amount_paise, recovered_paise: 0 });
@@ -148,18 +155,18 @@ export function useHealth() {
   return useQuery({ queryKey: queryKeys.health, queryFn: fetchHealth, refetchInterval: POLL_INTERVAL_MS });
 }
 
-export function useSummary(range: RangeDays) {
+export function useSummary(range: RangeDays, origin?: DataOrigin | "") {
   return useQuery({
-    queryKey: queryKeys.summary(range),
-    queryFn: () => fetchSummary(range),
+    queryKey: queryKeys.summary(range, origin),
+    queryFn: () => fetchSummary(range, origin),
     refetchInterval: POLL_INTERVAL_MS,
   });
 }
 
-export function useTimeseries(range: RangeDays) {
+export function useTimeseries(range: RangeDays, origin?: DataOrigin | "") {
   return useQuery({
-    queryKey: queryKeys.timeseries(range),
-    queryFn: () => fetchCombinedTimeseries(range),
+    queryKey: queryKeys.timeseries(range, origin),
+    queryFn: () => fetchCombinedTimeseries(range, origin),
     refetchInterval: POLL_INTERVAL_MS,
   });
 }
