@@ -164,10 +164,10 @@ export const Footer = () => {
                 </li>
                 <li>
                   <a
-                    href="mailto:hello@reviveo.ai"
+                    href="mailto:yadavkausha4a5@gmail.com"
                     className="text-sm text-slate-300 underline underline-offset-4 decoration-white/20 hover:text-white hover:decoration-white"
                   >
-                    hello@reviveo.ai
+                    yadavkausha4a5@gmail.com
                   </a>
                 </li>
               </ul>
