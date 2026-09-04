@@ -9,6 +9,8 @@ from __future__ import annotations
 import uuid
 from unittest.mock import patch
 
+import pytest
+
 from app import db
 from app.config import RunMode, settings
 from app.enums import Action, ExecutionMechanism
@@ -324,3 +326,83 @@ def test_fetch_razorpay_customer_unit(seeded_db, monkeypatch):
     monkeypatch.setattr(razorpay_service, "_get_client",
                         lambda: _FakeClient(_FakeCustomers(error=Exception("boom"))))
     assert razorpay_service.fetch_razorpay_customer("cust_rzp_u1") is None
+
+
+# ── Merchant-authoritative attach + retry ────────────────────────────────────
+@pytest.mark.usefixtures("seeded_db")
+class TestAttachAndRetry:
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from app.main import app
+        return TestClient(app)
+
+    H = {"X-API-Key": "reviveo-dev-key"}
+
+    def _skipped_event(self):
+        event = _ingest(_failed_envelope(email="void@razorpay.com"))
+        assert db.list_notifications_for_event(event["event_id"])[0]["status"] == "skipped"
+        return event
+
+    def test_attach_rejects_placeholder(self):
+        c = self._client()
+        db.insert_customer({"id": "cust_attach1", "merchant_id": MERCHANT,
+                            "name": "A1", "email": None, "phone": "+916111111111"})
+        r = c.put("/api/customers/cust_attach1", headers=self.H,
+                  json={"email": "void@razorpay.com"})
+        assert r.status_code == 422
+        assert db.get_customer(MERCHANT, "cust_attach1")["email"] is None
+
+    def test_attach_rejects_garbage_and_unknown(self):
+        c = self._client()
+        db.insert_customer({"id": "cust_attach2", "merchant_id": MERCHANT,
+                            "name": "A2", "email": None, "phone": None})
+        assert c.put("/api/customers/cust_attach2", headers=self.H,
+                     json={"email": "not-an-email"}).status_code == 422
+        assert c.put("/api/customers/cust_attach2", headers=self.H,
+                     json={"phone": "abc"}).status_code == 422
+        assert c.put("/api/customers/cust_attach2", headers=self.H,
+                     json={}).status_code == 422
+        assert c.put("/api/customers/cust_nope", headers=self.H,
+                     json={"email": "x@example.com"}).status_code == 404
+
+    def test_attach_then_retry_delivers(self):
+        c = self._client()
+        event = self._skipped_event()
+        cust_id = event["customer_id"] or "cust_attach3"
+        if event["customer_id"] is None:
+            db.insert_customer({"id": "cust_attach3", "merchant_id": MERCHANT,
+                                "name": "A3", "email": None,
+                                "phone": "+916333333333"})
+            db.update_event(event["event_id"], customer_id="cust_attach3")
+            cust_id = "cust_attach3"
+
+        put = c.put(f"/api/customers/{cust_id}", headers=self.H,
+                    json={"email": "Owner@Example.COM "})
+        assert put.status_code == 200
+        assert put.json()["email"] == "owner@example.com"  # normalized
+        assert db.get_customer(MERCHANT, cust_id)["email"] == "owner@example.com"
+
+        retry = c.post(f"/api/events/{event['event_id']}/notifications/retry",
+                       headers=self.H)
+        assert retry.status_code == 200, retry.text
+        body = retry.json()
+        assert body["recipient"] == "owner@example.com"
+        assert body["status"] in ("simulated", "sent")
+        assert body["customer_id"] == cust_id
+
+        # Second retry refuses duplicate delivery.
+        again = c.post(f"/api/events/{event['event_id']}/notifications/retry",
+                       headers=self.H)
+        assert again.status_code == 409
+
+    def test_retry_conflicts(self):
+        c = self._client()
+        # Unknown event.
+        assert c.post("/api/events/evt_nope/notifications/retry",
+                      headers=self.H).status_code == 404
+        # Event with no attempt (unclassified → approval, no execution).
+        event = _ingest(_failed_envelope(email="void@razorpay.com",
+                                         error_reason="mystery_xyz"))
+        r = c.post(f"/api/events/{event['event_id']}/notifications/retry",
+                   headers=self.H)
+        assert r.status_code == 409

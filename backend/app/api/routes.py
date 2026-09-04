@@ -256,6 +256,89 @@ def get_customer_route(customer_id: str) -> schemas.CustomerOut:
     return schemas.CustomerOut(**row)
 
 
+@router.put("/customers/{customer_id}", response_model=schemas.CustomerOut)
+def update_customer_route(customer_id: str, body: schemas.CustomerUpdateIn) -> schemas.CustomerOut:
+    """Attach/correct a customer's contact details (merchant-authoritative —
+    the single most trusted source, outranking any webhook field). Used to
+    supply a real email the payment webhooks never carried, after which
+    POST /events/{id}/notifications/retry can deliver the pending message.
+    """
+    merchant_id = _merchant_id()
+    if db.get_customer(merchant_id, customer_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+
+    updates: dict[str, str] = {}
+    if body.name is not None and body.name.strip():
+        updates["name"] = body.name.strip()
+    if body.email is not None and body.email.strip():
+        trusted = db.trusted_email(body.email)
+        if trusted is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "email must be valid and not a known test placeholder")
+        updates["email"] = trusted
+    if body.phone is not None and body.phone.strip():
+        phone = db.normalize_phone(body.phone)
+        if phone is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "phone must be a plausible dialable number")
+        updates["phone"] = phone
+    if not updates:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "provide at least one of name, email, phone")
+    row = db.update_customer(merchant_id, customer_id, **updates)
+    assert row is not None  # existence checked above
+    return schemas.CustomerOut(**row)
+
+
+@router.post("/events/{event_id}/notifications/retry",
+             response_model=schemas.NotificationOut)
+def retry_event_notification(event_id: str) -> schemas.NotificationOut:
+    """Explicit merchant retry of a NON-delivered notification (skipped or
+    failed only). Replaces that row and re-dispatches against the customer's
+    current stored contact — the path to deliver after attaching a real
+    email via PUT /customers/{id}. Delivered rows (sent/simulated) return
+    409: idempotency is never bypassed, nothing is ever double-sent.
+    """
+    from ..services import notification_service
+
+    merchant_id = _merchant_id()
+    event = db.get_event(event_id)
+    if event is None or event.get("merchant_id") != merchant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Event not found")
+    if event.get("status") == EventStatus.recovered.value:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Event already recovered — no recovery message to send")
+
+    attempts = db.list_attempts_for_event(event_id)
+    if not attempts:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "No recovery attempt yet — nothing to notify about")
+    attempt = attempts[-1]
+    if attempt.get("status") != "awaiting_outcome":
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"Latest attempt is '{attempt.get('status')}' — "
+                            "retry is only available once a recovery link is awaiting outcome")
+
+    existing = db.get_notification_by_attempt(attempt["recovery_attempt_id"])
+    if existing is not None and existing.get("status") in ("sent", "simulated"):
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"Notification already '{existing.get('status')}' — refusing duplicate send")
+    if existing is not None:
+        db.delete_notification(attempt["recovery_attempt_id"])
+
+    customer = (db.get_customer(merchant_id, event["customer_id"])
+                if event.get("customer_id") else None)
+    result = notification_service.send_customer_notification(
+        merchant_id=merchant_id, event=event,
+        recovery_attempt=db.get_recovery_attempt(attempt["recovery_attempt_id"]),
+        customer=customer,
+        short_url=attempt.get("short_url"),
+    )
+    row = db.get_notification_by_attempt(attempt["recovery_attempt_id"])
+    assert row is not None
+    return schemas.NotificationOut(**{**row, "ai_generated": bool(row["ai_generated"])})
+
+
 # ── Guardrails ────────────────────────────────────────────────────────────────
 _VALID_CHANNELS = {"email", "payment_link", "sms"}
 

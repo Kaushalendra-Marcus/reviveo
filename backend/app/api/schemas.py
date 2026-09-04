@@ -182,6 +182,15 @@ class CustomerOut(BaseModel):
     created_at: str
 
 
+class CustomerUpdateIn(BaseModel):
+    """Merchant-authoritative contact attach. Omitted fields stay unchanged.
+    Provided email must be trusted (valid + not a placeholder); provided
+    phone must be a plausible dialable number."""
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
 class PaginatedCustomers(BaseModel):
     items: list[CustomerOut]
     total: int

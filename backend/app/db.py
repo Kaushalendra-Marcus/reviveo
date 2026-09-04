@@ -246,6 +246,28 @@ def incr_customer_failed_count(merchant_id: str, customer_id: str) -> None:
     )
 
 
+def update_customer(merchant_id: str, customer_id: str,
+                    *, name: Optional[str] = None, email: Optional[str] = None,
+                    phone: Optional[str] = None) -> Optional[dict]:
+    """Merchant-authoritative contact update (dashboard/API). Only whitelisted
+    columns; merchant-scoped; returns the fresh row or None when missing."""
+    fields: dict[str, Any] = {}
+    if name is not None:
+        fields["name"] = name
+    if email is not None:
+        fields["email"] = email
+    if phone is not None:
+        fields["phone"] = phone
+    if not fields:
+        return get_customer(merchant_id, customer_id)
+    cols = ", ".join(f"{k}=?" for k in fields)
+    cur = execute(f"UPDATE customers SET {cols} WHERE merchant_id=? AND id=?",
+                  (*fields.values(), merchant_id, customer_id))
+    if cur.rowcount == 0:
+        return None
+    return get_customer(merchant_id, customer_id)
+
+
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # Razorpay test-mode placeholder identities CONFIRMED from live
@@ -776,6 +798,17 @@ def get_notification_by_attempt(recovery_attempt_id: str, channel: str = "email"
         "SELECT * FROM notifications WHERE recovery_attempt_id=? AND channel=?",
         (recovery_attempt_id, channel),
     )
+
+
+def delete_notification(recovery_attempt_id: str, channel: str = "email") -> bool:
+    """Remove one notification row (used only by the explicit merchant retry
+    endpoint to replace a non-delivered skipped/failed row — delivered rows
+    are never deletable through any code path)."""
+    cur = execute(
+        "DELETE FROM notifications WHERE recovery_attempt_id=? AND channel=?",
+        (recovery_attempt_id, channel),
+    )
+    return cur.rowcount > 0
 
 
 def list_notifications_for_event(event_id: str) -> list[dict]:
