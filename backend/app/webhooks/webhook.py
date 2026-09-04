@@ -180,9 +180,9 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
         #   payload.payment_link.entity.customer.{email,contact}
         #   payload.order.entity.notes.{email,contact}
         #   entity.notes.{email,contact,phone}
-        # All correlation stays payload-local here — no live Razorpay API
-        # calls on the webhook path (keeps ingest fast and failure-proof);
-        # see razorpay_service.fetch_payment_link for operator reconciliation.
+        # Plus SOURCE 6 below: one guarded Razorpay Customer API fetch, only
+        # when the entity carries a cust_… id with no local mapping (miss-only,
+        # failure-proof, still trust-validated before use).
         inner = payload.get("payload", {}) if isinstance(payload.get("payload"), dict) else {}
         link_customer = (inner.get("payment_link", {}) or {}).get("entity", {}).get("customer", {}) or {}
         order_notes = (inner.get("order", {}) or {}).get("entity", {}).get("notes", {}) or {}
@@ -202,11 +202,26 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
         # When they point at a real attempt/event, that recovery customer is
         # authoritative — never mint a new customer from the entity contact.
         linked_customer_id = _linked_recovery_customer(merchant_id, notes)
+        # SOURCE 6 — authoritative Razorpay customer record, fetched only on
+        # local-mapping miss (no unnecessary API calls) and never trusted
+        # blindly: the returned contact still passes trusted_email/normalize
+        # validation inside the resolver, and any fetch failure degrades to
+        # payload-local resolution.
+        rzp_customer_id = entity.get("customer_id")
+        if (rzp_customer_id and linked_customer_id is None
+                and db.get_customer_by_razorpay_id(merchant_id, rzp_customer_id) is None):
+            api_contact = razorpay_service.fetch_razorpay_customer(rzp_customer_id)
+            if api_contact:
+                extra_contacts.append(
+                    ("razorpay_customer", api_contact.get("email"),
+                     api_contact.get("contact")))
+                if not notes.get("name") and api_contact.get("name"):
+                    notes = {**notes, "name": api_contact.get("name")}
         customer = db.resolve_webhook_customer(
             merchant_id,
             email=(entity.get("email")),
             phone=(entity.get("contact")),
-            razorpay_customer_id=entity.get("customer_id"),
+            razorpay_customer_id=rzp_customer_id,
             name=entity.get("name") or notes.get("name"),
             extra_contacts=extra_contacts,
             linked_customer_id=linked_customer_id,

@@ -136,6 +136,34 @@ def fetch_payment_link(razorpay_ref: str) -> Optional[dict]:
         return None
 
 
+def fetch_razorpay_customer(razorpay_customer_id: str) -> Optional[dict]:
+    """SOURCE 6 — authoritative Razorpay customer record lookup
+    (https://razorpay.com/docs/api/customers/). Returns
+    `{"email", "contact", "name"}` (values may be None) or None when the
+    record is missing/unreachable.
+
+    Live mode only, and NEVER raises: the webhook path must not depend on
+    this — callers treat None as "no authoritative record" and continue
+    with payload-local resolution. Synthetic mode always returns None
+    (no network calls outside live).
+    """
+    if not razorpay_customer_id or not (settings.is_live and settings.razorpay_configured):
+        return None
+    try:
+        record = _get_client().customer.fetch(razorpay_customer_id)
+    except Exception as exc:  # noqa: BLE001 — lookup failure degrades to "unknown", never crash
+        logger.warning("razorpay customer fetch failed", extra={"context": {
+            "razorpay_customer_id": razorpay_customer_id, "error": str(exc)}})
+        return None
+    if not isinstance(record, dict):
+        return None
+    return {
+        "email": record.get("email"),
+        "contact": record.get("contact"),
+        "name": record.get("name"),
+    }
+
+
 def verify_webhook_signature(raw_body: bytes, signature: Optional[str]) -> bool:
     """HMAC-SHA256 verification over the RAW request body (doc §3.6):
     verify signature -> validate payload -> deduplicate -> persist -> process

@@ -400,8 +400,10 @@ def resolve_webhook_customer(
     # 1 — existing customer with a trusted email (extras outrank entity).
     for src, t_email, _ in extras:
         if t_email:
-            row = _matched(get_customer_by_email(merchant_id, t_email),
-                           "existing_customer_email")
+            row = _matched(
+                get_customer_by_email(merchant_id, t_email),
+                "razorpay_customer" if src == "razorpay_customer"
+                else "existing_customer_email")
             if row:
                 return row
     if entity_trusted:

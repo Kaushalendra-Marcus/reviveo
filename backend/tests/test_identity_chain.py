@@ -20,7 +20,8 @@ VOID = "void@razorpay.com"
 
 
 def _failed_envelope(*, email=None, contact=None, error_reason="payment_cancelled",
-                     amount=49900, pay_id=None, event_uuid=None, entity_notes=None):
+                     amount=49900, pay_id=None, event_uuid=None, entity_notes=None,
+                     razorpay_customer_id=None):
     entity: dict = {
         "id": pay_id or f"pay_{uuid.uuid4().hex[:10]}",
         "amount": amount,
@@ -32,6 +33,8 @@ def _failed_envelope(*, email=None, contact=None, error_reason="payment_cancelle
         entity["email"] = email
     if contact is not None:
         entity["contact"] = contact
+    if razorpay_customer_id is not None:
+        entity["customer_id"] = razorpay_customer_id
     if entity_notes is not None:
         entity["notes"] = entity_notes
     return {
@@ -230,3 +233,94 @@ def test_no_hardcoded_email():
             if forbidden.search(line):
                 hits.append(f"{path.name}:{i}: {line.strip()}")
     assert hits == [], f"hardcoded recipient fallback found: {hits}"
+
+
+# ── SOURCE 6: Razorpay Customer API lookup ───────────────────────────────────
+def test_source6_api_record_resolves_customer(seeded_db):
+    """Entity carries cust_… id with no local mapping; the authoritative
+    Razorpay record holds the real address → resolved, notified, stored."""
+    from app.services import razorpay_service
+    with patch.object(razorpay_service, "fetch_razorpay_customer",
+                      return_value={"email": "apibuyer@example.com",
+                                    "contact": "+914444444444",
+                                    "name": "API Buyer"}) as mock_fetch:
+        event = _ingest(_failed_envelope(email=VOID, contact="+917830328929",
+                                         razorpay_customer_id="cust_rzp_api9"))
+        mock_fetch.assert_called_once_with("cust_rzp_api9")
+    customer = db.get_customer(MERCHANT, event["customer_id"])
+    assert customer["email"] == "apibuyer@example.com"
+    assert customer["razorpay_customer_id"] == "cust_rzp_api9"
+    notifs = db.list_notifications_for_event(event["event_id"])
+    assert notifs[0]["recipient"] == "apibuyer@example.com"
+
+
+def test_source6_api_miss_falls_back_safely(seeded_db):
+    from app.services import razorpay_service
+    with patch.object(razorpay_service, "fetch_razorpay_customer",
+                      return_value=None):
+        event = _ingest(_failed_envelope(email=VOID,
+                                         razorpay_customer_id="cust_rzp_ghost"))
+        assert event["customer_id"] is None
+        notifs = db.list_notifications_for_event(event["event_id"])
+        assert notifs[0]["status"] == "skipped"
+
+
+def test_source6_not_called_on_local_mapping_hit(seeded_db):
+    from app.services import razorpay_service
+    db.insert_customer({"id": "cust_mapped6", "merchant_id": MERCHANT,
+                        "name": "Mapped Six", "email": "mapped6@example.com",
+                        "phone": None, "razorpay_customer_id": "cust_rzp_hit6"})
+    with patch.object(razorpay_service, "fetch_razorpay_customer",
+                      side_effect=AssertionError("no API call on local hit")):
+        event = _ingest(_failed_envelope(email=VOID,
+                                         razorpay_customer_id="cust_rzp_hit6"))
+        assert event["customer_id"] == "cust_mapped6"
+
+
+def test_source6_placeholder_fetched_email_rejected(seeded_db):
+    from app.services import razorpay_service
+    with patch.object(razorpay_service, "fetch_razorpay_customer",
+                      return_value={"email": VOID, "contact": None,
+                                    "name": None}):
+        event = _ingest(_failed_envelope(email=VOID,
+                                         razorpay_customer_id="cust_rzp_void6"))
+        assert event["customer_id"] is None
+        assert db.query_all("SELECT * FROM customers WHERE email=?", (VOID,)) == []
+
+
+def test_fetch_razorpay_customer_unit(seeded_db, monkeypatch):
+    """Direct unit coverage: live gate, record parsing, exception safety."""
+    from app.services import razorpay_service
+
+    # Synthetic mode → None without touching any client.
+    assert razorpay_service.fetch_razorpay_customer("cust_any") is None
+
+    monkeypatch.setattr(settings, "run_mode", RunMode.live)
+    monkeypatch.setattr(settings, "razorpay_key_id", "rzp_test_x")
+    monkeypatch.setattr(settings, "razorpay_key_secret", "secret_x")
+
+    class _FakeCustomers:
+        def __init__(self, result=None, error=None):
+            self.result = result
+            self.error = error
+        def fetch(self, cid):
+            assert cid == "cust_rzp_u1"
+            if self.error:
+                raise self.error
+            return self.result
+
+    class _FakeClient:
+        def __init__(self, customers):
+            self.customer = customers
+
+    monkeypatch.setattr(razorpay_service, "_get_client",
+                        lambda: _FakeClient(_FakeCustomers(
+                            result={"id": "cust_rzp_u1", "email": "u1@example.com",
+                                    "contact": "+915555555555"})))
+    got = razorpay_service.fetch_razorpay_customer("cust_rzp_u1")
+    assert got == {"email": "u1@example.com", "contact": "+915555555555",
+                   "name": None}
+
+    monkeypatch.setattr(razorpay_service, "_get_client",
+                        lambda: _FakeClient(_FakeCustomers(error=Exception("boom"))))
+    assert razorpay_service.fetch_razorpay_customer("cust_rzp_u1") is None
