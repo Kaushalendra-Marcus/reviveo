@@ -8,7 +8,7 @@ import { BoundedAutonomy } from "@/components/homepage/bounded-autonomy";
 import { Hero } from "@/components/homepage/hero";
 import { Footer } from "@/components/homepage/footer";
 import { SiteNav } from "@/components/homepage/site-nav";
-import { SpotlightCards } from "@/components/homepage/spotlight-cards";
+import { ProblemStatement } from "@/components/homepage/problem-statement";
 import { IntegrationCarousel } from "@/components/homepage/integration-carousel";
 import { ProductHighlights } from "@/components/homepage/product-highlights";
 
@@ -25,13 +25,13 @@ export default function Home() {
         {/* HERO — background + content only now; nav lives in <SiteNav /> above */}
         <Hero />
 
+        {/* THE INVISIBLE LEAK — problem statement & root causes breakdown */}
+        <ProblemStatement />
+
         {/* THE RECOVERY ENGINE — the central architecture diagram, the main visual identity of the product */}
         <section id="product">
           <RecoveryPipelineDiagram />
         </section>
-
-        {/* DASHBOARD PREVIEW — spotlight cards, fitted to Reviveo palette */}
-        <SpotlightCards />
 
         {/* INTEGRATION ORBITAL — Antimetal-inspired logo carousel */}
         <IntegrationCarousel />

@@ -21,6 +21,7 @@ def temp_db(monkeypatch):
     # database_url directly rather than fighting the cache.
     from app.config import settings
     monkeypatch.setattr(settings, "database_url", path)
+    monkeypatch.setattr(settings, "razorpay_webhook_secret", None)
 
     from app import db
     # Each test may run in the same thread but db._local persists a stale
