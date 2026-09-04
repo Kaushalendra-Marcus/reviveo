@@ -113,27 +113,28 @@ def _find_customer_by_contact(merchant_id: str, email: Optional[str], phone: Opt
     return None
 
 
-def _linked_recovery_customer(merchant_id: str, notes: dict) -> Optional[str]:
+def _linked_recovery_customer(merchant_id: str, *note_sets: dict) -> Optional[str]:
     """CASE B correlation: return the Reviveo customer id when `notes` carry
     our own link correlation keys, else None. The referenced attempt/event
     must exist AND belong to this merchant — anything else is ignored, so a
     forged or stale reference can never hijack another customer's identity.
     """
-    if not isinstance(notes, dict):
-        return None
-    attempt_id = notes.get("recovery_attempt_id")
-    if isinstance(attempt_id, str) and attempt_id:
-        attempt = db.get_recovery_attempt(attempt_id)
-        if attempt is not None and attempt.get("merchant_id") == merchant_id:
-            event = db.get_event(attempt["event_id"])
-            if event is not None and event.get("customer_id"):
+    for notes in note_sets:
+        if not isinstance(notes, dict):
+            continue
+        attempt_id = notes.get("recovery_attempt_id")
+        if isinstance(attempt_id, str) and attempt_id:
+            attempt = db.get_recovery_attempt(attempt_id)
+            if attempt is not None and attempt.get("merchant_id") == merchant_id:
+                event = db.get_event(attempt["event_id"])
+                if event is not None and event.get("customer_id"):
+                    return event["customer_id"]
+        event_id = notes.get("event_id")
+        if isinstance(event_id, str) and event_id:
+            event = db.get_event(event_id)
+            if (event is not None and event.get("merchant_id") == merchant_id
+                    and event.get("customer_id")):
                 return event["customer_id"]
-    event_id = notes.get("event_id")
-    if isinstance(event_id, str) and event_id:
-        event = db.get_event(event_id)
-        if (event is not None and event.get("merchant_id") == merchant_id
-                and event.get("customer_id")):
-            return event["customer_id"]
     return None
 
 
@@ -185,13 +186,17 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
         # failure-proof, still trust-validated before use).
         inner = payload.get("payload", {}) if isinstance(payload.get("payload"), dict) else {}
         link_customer = (inner.get("payment_link", {}) or {}).get("entity", {}).get("customer", {}) or {}
+        link_notes = (inner.get("payment_link", {}) or {}).get("entity", {}).get("notes", {}) or {}
+        if not isinstance(link_notes, dict):
+            link_notes = {}
         order_notes = (inner.get("order", {}) or {}).get("entity", {}).get("notes", {}) or {}
         if not isinstance(order_notes, dict):
             order_notes = {}
         notes = entity.get("notes") if isinstance(entity.get("notes"), dict) else {}
         extra_contacts = [
             ("payment_link",
-             link_customer.get("email"), link_customer.get("contact")),
+             link_customer.get("email") or link_notes.get("email"),
+             link_customer.get("contact") or link_notes.get("contact") or link_notes.get("phone")),
             ("order",
              order_notes.get("email"), order_notes.get("contact") or order_notes.get("phone")),
             ("notes",
@@ -201,7 +206,7 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
         # own link notes (event_id / recovery_attempt_id / source=reviveo).
         # When they point at a real attempt/event, that recovery customer is
         # authoritative — never mint a new customer from the entity contact.
-        linked_customer_id = _linked_recovery_customer(merchant_id, notes)
+        linked_customer_id = _linked_recovery_customer(merchant_id, notes, link_notes, order_notes)
         # SOURCE 6 — authoritative Razorpay customer record, fetched only on
         # local-mapping miss (no unnecessary API calls) and never trusted
         # blindly: the returned contact still passes trusted_email/normalize
@@ -222,7 +227,7 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
             email=(entity.get("email")),
             phone=(entity.get("contact")),
             razorpay_customer_id=rzp_customer_id,
-            name=entity.get("name") or notes.get("name"),
+            name=entity.get("name") or notes.get("name") or link_notes.get("name"),
             extra_contacts=extra_contacts,
             linked_customer_id=linked_customer_id,
         )

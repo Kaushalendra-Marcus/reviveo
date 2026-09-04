@@ -23,7 +23,7 @@ VOID = "void@razorpay.com"
 
 def _failed_envelope(*, email=None, contact=None, error_reason="payment_cancelled",
                      amount=49900, pay_id=None, event_uuid=None, entity_notes=None,
-                     razorpay_customer_id=None):
+                     razorpay_customer_id=None, payment_link_notes=None):
     entity: dict = {
         "id": pay_id or f"pay_{uuid.uuid4().hex[:10]}",
         "amount": amount,
@@ -39,11 +39,14 @@ def _failed_envelope(*, email=None, contact=None, error_reason="payment_cancelle
         entity["customer_id"] = razorpay_customer_id
     if entity_notes is not None:
         entity["notes"] = entity_notes
-    return {
+    envelope = {
         "id": event_uuid or f"evt_rzp_{uuid.uuid4().hex[:10]}",
         "event": "payment.failed",
         "payload": {"payment": {"entity": entity}},
     }
+    if payment_link_notes is not None:
+        envelope["payload"]["payment_link"] = {"entity": {"notes": payment_link_notes}}
+    return envelope
 
 
 def _ingest(payload) -> dict:
@@ -149,6 +152,35 @@ def test_case_b_failed_recovery_payment_reuses_attempt_customer(seeded_db):
                       "attempt_number": "1", "source": "reviveo"}))
     assert failed["customer_id"] == "cust_caseb"
     assert db.count_customers(MERCHANT) == before  # no brand-new customer
+    assert db.query_all("SELECT * FROM customers WHERE email=?", (VOID,)) == []
+
+
+def test_case_b_payment_link_notes_reuse_attempt_customer(seeded_db):
+    db.insert_customer({"id": "cust_link_notes", "merchant_id": MERCHANT,
+                        "name": "Link Notes", "email": "link.notes@example.com",
+                        "phone": "+914444444444"})
+    event_id = f"evt_link_notes_{uuid.uuid4().hex[:8]}"
+    db.insert_event({"event_id": event_id, "merchant_id": MERCHANT,
+                     "customer_id": "cust_link_notes", "type": "payment_failed",
+                     "error_code": "card_declined", "amount_paise": 99900,
+                     "status": "detected", "origin": "synthetic",
+                     "created_at": "2026-09-04T12:00:00Z",
+                     "updated_at": "2026-09-04T12:00:00Z"})
+    attempt = execution_service.execute_action(
+        merchant_id=MERCHANT, event=db.get_event(event_id),
+        action=Action.retry_and_notify,
+        mechanism=ExecutionMechanism.new_recovery_payment,
+        customer=db.get_customer(MERCHANT, "cust_link_notes"))
+    before = db.count_customers(MERCHANT)
+
+    failed = _ingest(_failed_envelope(
+        email=VOID, contact="+918888888888",
+        payment_link_notes={"event_id": event_id,
+                            "recovery_attempt_id": attempt.recovery_attempt_id,
+                            "attempt_number": "1", "source": "reviveo"}))
+
+    assert failed["customer_id"] == "cust_link_notes"
+    assert db.count_customers(MERCHANT) == before
     assert db.query_all("SELECT * FROM customers WHERE email=?", (VOID,)) == []
 
 
