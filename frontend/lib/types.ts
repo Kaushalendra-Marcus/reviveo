@@ -122,11 +122,32 @@ export interface DecisionOut {
   created_at: string;
 }
 
+export interface Notification {
+  id: number;
+  notification_id: string;
+  merchant_id: string;
+  event_id: string;
+  recovery_attempt_id: string;
+  channel: string;
+  recipient: string;
+  subject: string | null;
+  body: string;
+  status: "sent" | "simulated" | "failed" | "skipped";
+  provider_message_id: string | null;
+  created_at: string;
+  sent_at: string | null;
+  error: string | null;
+  ai_generated: boolean;
+  ai_model: string | null;
+  ai_latency_ms: number | null;
+}
+
 /** GET /api/events/{id} — schemas.EventDetailOut = EventOut + the full
- * recovery_attempts and decisions histories for this event. */
+ * recovery_attempts, decisions, and notifications histories for this event. */
 export interface EventDetail extends EventOut {
   attempts: RecoveryAttemptOut[];
   decisions: DecisionOut[];
+  notifications?: Notification[];
 }
 
 export interface Paginated<T> {

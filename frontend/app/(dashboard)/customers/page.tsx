@@ -30,7 +30,7 @@ export default function CustomersPage() {
       ) : !data || data.items.length === 0 ? (
         <EmptyState
           title="No customers yet"
-          message="Seeded demo customers (Rahul, Priya, etc.) appear here."
+          message="Customers will appear here as payment activity is detected."
           icon={<Users className="size-5" />}
         />
       ) : (
@@ -42,10 +42,9 @@ export default function CustomersPage() {
                   <TableRow className="border-slate-200 hover:bg-transparent">
                     <TableHead>Customer</TableHead>
                     <TableHead>Email</TableHead>
-                    <TableHead>Phone</TableHead>
                     <TableHead className="text-right">Recovered</TableHead>
-                    <TableHead className="text-right">Failures</TableHead>
-                    <TableHead>Created</TableHead>
+                    <TableHead className="text-right">Failed Payments</TableHead>
+                    <TableHead>Last Activity</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -56,7 +55,6 @@ export default function CustomersPage() {
                         <div className="font-mono text-xs text-slate-500">{c.id}</div>
                       </TableCell>
                       <TableCell className="text-slate-600">{c.email ?? "—"}</TableCell>
-                      <TableCell className="text-slate-600">{c.phone ?? "—"}</TableCell>
                       <TableCell className="text-right font-medium tabular-nums">
                         {formatINR(c.total_recovered_paise)}
                       </TableCell>

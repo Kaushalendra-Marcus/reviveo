@@ -88,9 +88,30 @@ class DecisionOut(BaseModel):
     created_at: str
 
 
+class NotificationOut(BaseModel):
+    id: int
+    notification_id: str
+    merchant_id: str
+    event_id: str
+    recovery_attempt_id: str
+    channel: str
+    recipient: str
+    subject: Optional[str] = None
+    body: str
+    status: str
+    provider_message_id: Optional[str] = None
+    created_at: str
+    sent_at: Optional[str] = None
+    error: Optional[str] = None
+    ai_generated: bool = False
+    ai_model: Optional[str] = None
+    ai_latency_ms: Optional[int] = None
+
+
 class EventDetailOut(EventOut):
     attempts: list[RecoveryAttemptOut] = Field(default_factory=list)
     decisions: list[DecisionOut] = Field(default_factory=list)
+    notifications: list[NotificationOut] = Field(default_factory=list)
 
 
 class AuditTrailOut(BaseModel):

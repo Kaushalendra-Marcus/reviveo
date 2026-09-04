@@ -186,6 +186,7 @@ def get_event_detail(event_id: str) -> schemas.EventDetailOut:
     decision = db.get_latest_decision(event_id)
     attempts = db.list_attempts_for_event(event_id)
     decisions = db.list_decisions_for_event(event_id)
+    notifications = db.list_notifications_for_event(event_id)
     return schemas.EventDetailOut(
         **{**row, "payment_recovered": bool(row["payment_recovered"]),
            "subscription_restored": bool(row["subscription_restored"])},
@@ -195,6 +196,7 @@ def get_event_detail(event_id: str) -> schemas.EventDetailOut:
         attempts=[schemas.RecoveryAttemptOut(**a) for a in attempts],
         decisions=[schemas.DecisionOut(**{**d, "requires_approval": bool(d["requires_approval"]),
                                            "ai_used": bool(d["ai_used"])}) for d in decisions],
+        notifications=[schemas.NotificationOut(**{**n, "ai_generated": bool(n["ai_generated"])}) for n in notifications],
     )
 
 

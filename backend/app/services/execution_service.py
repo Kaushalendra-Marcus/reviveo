@@ -135,6 +135,18 @@ def execute_action(
             contacts=1 if is_contact else 0,
         )
 
+        if is_contact and status != "scheduled":
+            from . import notification_service
+            attempt_record = db.get_recovery_attempt(recovery_attempt_id)
+            if attempt_record:
+                notification_service.send_customer_notification(
+                    merchant_id=merchant_id,
+                    event=event,
+                    recovery_attempt=attempt_record,
+                    customer=customer,
+                    short_url=short_url,
+                )
+
     logger.info("action executed", extra={"context": {
         "event_id": event_id, "recovery_attempt_id": recovery_attempt_id,
         "action": action.value, "mechanism": mechanism.value,

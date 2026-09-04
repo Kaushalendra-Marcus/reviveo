@@ -8,7 +8,7 @@ export default function EventsPage() {
     <div>
       <PageHeader
         title="Events"
-        description="Every detected payment failure and how Reviveo responded."
+        description="Every payment failure and how Reviveo responded."
       />
       <Suspense fallback={<LoadingState rows={8} />}>
         <EventsPageClient />

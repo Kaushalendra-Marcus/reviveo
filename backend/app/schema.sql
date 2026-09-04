@@ -141,6 +141,30 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON pending_approvals (merchant_id, status);
 
+-- Customer recovery notifications (email/sms). UNIQUE(recovery_attempt_id, channel) ensures idempotency.
+CREATE TABLE IF NOT EXISTS notifications (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    notification_id      TEXT UNIQUE NOT NULL,
+    merchant_id          TEXT NOT NULL,
+    event_id             TEXT NOT NULL,
+    recovery_attempt_id  TEXT NOT NULL,
+    channel              TEXT NOT NULL DEFAULT 'email', -- email|sms
+    recipient            TEXT NOT NULL,
+    subject              TEXT,
+    body                 TEXT NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'sent', -- sent|simulated|failed|skipped
+    provider_message_id  TEXT,
+    created_at           TEXT NOT NULL,
+    sent_at              TEXT,
+    error                TEXT,
+    ai_generated         INTEGER NOT NULL DEFAULT 0,
+    ai_model             TEXT,
+    ai_latency_ms        INTEGER,
+    UNIQUE (recovery_attempt_id, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_event ON notifications (event_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_attempt ON notifications (recovery_attempt_id);
+
 -- Full audit trail with AI-usage columns (doc C7).
 CREATE TABLE IF NOT EXISTS audit_log (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,

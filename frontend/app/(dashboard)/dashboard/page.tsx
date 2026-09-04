@@ -36,7 +36,7 @@ export default function DashboardOverviewPage() {
             ? "Showing only real, Razorpay-verified events — synthetic demo data hidden."
             : origin === "synthetic"
             ? "Showing only synthetic demo/batch data."
-            : "How Reviveo is doing right now."
+            : "See failed payments, recovery actions, and revenue recovered."
         }
         actions={
           <div className="flex items-center gap-2">

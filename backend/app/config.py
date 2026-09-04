@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     ai_model_fast: str = "qwen/qwen3.8-27b"
     ai_model_summary: str = "qwen/qwen3.8-27b"
 
+    notification_email_enabled: bool = False
+    resend_api_key: str = ""
+    notification_from_email: str = "onboarding@resend.dev"
+
     frontend_origin: str = "http://localhost:3000"
 
     # Runtime / financial guardrails (doc §3.10) — module-level constants that
@@ -63,6 +67,10 @@ class Settings(BaseSettings):
     @property
     def ai_configured(self) -> bool:
         return bool(self.groq_api_key)
+
+    @property
+    def notification_email_configured(self) -> bool:
+        return bool(self.resend_api_key)
 
 
 @lru_cache

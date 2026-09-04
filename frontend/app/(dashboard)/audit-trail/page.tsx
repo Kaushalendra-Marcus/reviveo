@@ -47,7 +47,7 @@ export default function AuditTrailPage() {
                     <TableHead>Time</TableHead>
                     <TableHead>Event</TableHead>
                     <TableHead>Stage</TableHead>
-                    <TableHead>Message</TableHead>
+                    <TableHead>Details</TableHead>
                     <TableHead>AI</TableHead>
                   </TableRow>
                 </TableHeader>

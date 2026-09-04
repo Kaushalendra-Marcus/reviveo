@@ -12,7 +12,7 @@ export default function RecoveriesPage() {
     <div>
       <PageHeader
         title="Recoveries"
-        description="All in-progress recoveries — waiting for outcome, scheduled or pending approval."
+        description="Track recovery actions that are scheduled, awaiting payment, or need approval."
       />
       {isLoading ? (
         <LoadingState rows={8} />
@@ -21,8 +21,8 @@ export default function RecoveriesPage() {
       ) : (
         <EventTable
           events={data?.items ?? []}
-          emptyTitle="No active recoveries"
-          emptyMessage="When a recovery is scheduled, awaiting payment, or pending approval, it appears here."
+          emptyTitle="Active recovery attempts will appear here."
+          emptyMessage="When a recovery action is scheduled, awaiting payment, or needs approval, it will show up here."
         />
       )}
     </div>

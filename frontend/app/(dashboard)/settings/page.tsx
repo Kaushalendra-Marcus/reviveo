@@ -13,12 +13,12 @@ export default function SettingsPage() {
 
   return (
     <div>
-      <PageHeader title="Settings" description="Guardrails, thresholds, and actions waiting on your approval." />
+      <PageHeader title="Settings" description="Control how Reviveo handles payment recovery." />
 
       <Tabs defaultValue="approvals">
         <TabsList>
           <TabsTrigger value="approvals" className="gap-1.5">
-            Pending Approvals
+            Needs Approval
             {pendingCount > 0 ? (
               <Badge variant="outline" className="rounded-full border-amber-200 bg-amber-50 px-1.5 text-[10px] text-amber-700">
                 {pendingCount}

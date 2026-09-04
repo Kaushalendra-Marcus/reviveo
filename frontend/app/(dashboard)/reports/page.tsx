@@ -71,16 +71,14 @@ export default function ReportsPage() {
     <div>
       <PageHeader
         title="Reports"
-        description="Run a reproducible synthetic batch through the real pipeline and compare it against a no-intervention baseline."
+        description="Measure how much revenue Reviveo could recover from failed payments."
       />
 
       <Card className="rounded-2xl border-slate-200 shadow-sm">
         <CardHeader>
-          <CardTitle>Run a Batch</CardTitle>
+          <CardTitle>Run Recovery Simulation</CardTitle>
           <CardDescription>
-            Every batch runs the same events through both a modeled "no recovery system" baseline and the real
-            pipeline (treatment), using the same random seed for both — the treatment can only add recoveries on
-            top of what would have happened anyway.
+            Compare what may happen without Reviveo against the recovery outcome produced by Reviveo.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -114,7 +112,7 @@ export default function ReportsPage() {
             <div className="flex items-center gap-2.5">
               <Switch id="dry_run" checked={dryRun} onCheckedChange={setDryRun} />
               <Label htmlFor="dry_run" className="font-normal">
-                Dry run (no live Razorpay calls)
+                Simulation only
               </Label>
             </div>
             <div className="flex items-center gap-2.5">
@@ -129,7 +127,7 @@ export default function ReportsPage() {
             <Alert>
               <Info className="size-4" />
               <AlertDescription>
-                No Anthropic key is configured — decisions will fall back to the deterministic policy engine
+                No AI key is configured — decisions will fall back to the deterministic policy engine
                 automatically, and that fallback will be visible in each event's audit trail.
               </AlertDescription>
             </Alert>
@@ -137,7 +135,7 @@ export default function ReportsPage() {
 
           <Button onClick={handleRun} disabled={runBatch.isPending} className="w-full sm:w-auto">
             <Play className="size-4" />
-            {runBatch.isPending ? "Running…" : "Run Batch"}
+            {runBatch.isPending ? "Running…" : "Run Recovery Simulation"}
           </Button>
         </CardContent>
       </Card>
@@ -153,15 +151,15 @@ export default function ReportsPage() {
             <LoadingState rows={3} />
           ) : !result ? (
             <EmptyState
-              title="No batch has run yet"
-              message="Run a batch above to see a baseline-vs-treatment comparison."
+              title="No simulation run yet"
+              message="Run a recovery simulation above to compare outcomes."
               icon={<FlaskConical className="size-5" />}
             />
           ) : (
             <div className="space-y-4">
               <div className="flex flex-col gap-3 sm:flex-row">
-                <ResultColumn title="Baseline (no recovery system)" result={result.baseline} />
-                <ResultColumn title="Treatment (Reviveo pipeline)" result={result.treatment} />
+                <ResultColumn title="Without Reviveo" result={result.baseline} />
+                <ResultColumn title="With Reviveo" result={result.treatment} />
               </div>
 
               {lift ? (

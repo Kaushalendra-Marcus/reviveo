@@ -30,7 +30,7 @@ export default function StrategiesPage() {
       ) : !data || data.length === 0 ? (
         <EmptyState
           title="No strategies executed yet"
-          message="Run a batch or trigger a recovery to populate this view."
+          message="Recovery strategies will appear here after Reviveo processes payment failures."
           icon={<Layers className="size-5" />}
         />
       ) : (
@@ -39,7 +39,7 @@ export default function StrategiesPage() {
             <Table>
               <TableHeader>
                 <TableRow className="border-slate-200 hover:bg-transparent">
-                  <TableHead>Strategy (mechanism)</TableHead>
+                  <TableHead>Recovery Strategy</TableHead>
                   <TableHead className="text-right">Attempts</TableHead>
                   <TableHead className="text-right">Recovered</TableHead>
                   <TableHead className="text-right">Recovered count</TableHead>

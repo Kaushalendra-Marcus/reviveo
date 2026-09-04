@@ -453,6 +453,42 @@ def set_approval_status(approval_id: int, from_status: str, to_status: str,
     return cur.rowcount == 1
 
 
+# ── notifications ─────────────────────────────────────────────────────────────
+def insert_notification(n: dict) -> bool:
+    """Returns True if newly inserted, False if (recovery_attempt_id, channel) already exists."""
+    try:
+        execute(
+            """INSERT INTO notifications
+               (notification_id, merchant_id, event_id, recovery_attempt_id,
+                channel, recipient, subject, body, status, provider_message_id,
+                created_at, sent_at, error, ai_generated, ai_model, ai_latency_ms)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (n["notification_id"], n["merchant_id"], n["event_id"],
+             n["recovery_attempt_id"], n.get("channel", "email"), n["recipient"],
+             n.get("subject"), n["body"], n.get("status", "sent"),
+             n.get("provider_message_id"), n.get("created_at") or now_iso(),
+             n.get("sent_at"), n.get("error"), int(n.get("ai_generated", 0)),
+             n.get("ai_model"), n.get("ai_latency_ms")),
+        )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_notification_by_attempt(recovery_attempt_id: str, channel: str = "email") -> Optional[dict]:
+    return query_one(
+        "SELECT * FROM notifications WHERE recovery_attempt_id=? AND channel=?",
+        (recovery_attempt_id, channel),
+    )
+
+
+def list_notifications_for_event(event_id: str) -> list[dict]:
+    return query_all(
+        "SELECT * FROM notifications WHERE event_id=? ORDER BY id",
+        (event_id,),
+    )
+
+
 # ── audit log ─────────────────────────────────────────────────────────────────
 def insert_audit(a: dict) -> None:
     execute(
