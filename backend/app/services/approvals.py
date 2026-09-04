@@ -159,7 +159,7 @@ def approve(approval_id: int, resolved_by: str = "merchant-dashboard") -> dict:
                       {"recovery_attempt_id": result.recovery_attempt_id, "error": result.error})
     return finish(ApprovalStatus.executed,
                   f"Approved by {resolved_by} and executed via shared execution path.",
-                  {"recovery_attempt_id": result.recovery_attempt_id})
+                  {"recovery_attempt_id": result.recovery_attempt_id, "short_url": result.short_url})
 
 
 def deny(approval_id: int, resolved_by: str = "merchant-dashboard",

@@ -345,10 +345,14 @@ def insert_recovery_attempt(a: dict) -> None:
 
 
 def get_recovery_attempt(recovery_attempt_id: str) -> Optional[dict]:
-    return query_one(
+    row = query_one(
         "SELECT * FROM recovery_attempts WHERE recovery_attempt_id=?",
         (recovery_attempt_id,),
     )
+    if row:
+        notes = json.loads(row.pop("notes_json") or "{}")
+        row["short_url"] = notes.get("short_url")
+    return row
 
 
 def get_attempt_by_reference(reference_id: str) -> Optional[dict]:
@@ -358,10 +362,14 @@ def get_attempt_by_reference(reference_id: str) -> Optional[dict]:
 
 
 def list_attempts_for_event(event_id: str) -> list[dict]:
-    return query_all(
+    rows = query_all(
         "SELECT * FROM recovery_attempts WHERE event_id=? ORDER BY attempt_number",
         (event_id,),
     )
+    for r in rows:
+        notes = json.loads(r.pop("notes_json") or "{}")
+        r["short_url"] = notes.get("short_url")
+    return rows
 
 
 def update_recovery_attempt(recovery_attempt_id: str, **fields) -> None:

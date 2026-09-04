@@ -370,6 +370,7 @@ def approve_approval(approval_id: int, body: schemas.ApprovalActionIn = schemas.
                               "payload": {"approval_id": approval_id, "fresh_action": proposed_action}})
 
     recovery_attempt_id = None
+    short_url = None
     if execution_mechanism:
         try:
             from ..enums import Action, ExecutionMechanism
@@ -392,11 +393,13 @@ def approve_approval(approval_id: int, body: schemas.ApprovalActionIn = schemas.
             return schemas.ApprovalActionOut(id=approval_id, status="execution_failed",
                                               event_id=approval["event_id"], ok=False)
         recovery_attempt_id = result.recovery_attempt_id
+        short_url = result.short_url
         new_status = EventStatus.scheduled.value if result.status == "scheduled" else EventStatus.waiting_for_outcome.value
         db.update_event(approval["event_id"], status=new_status)
         db.insert_audit({"event_id": approval["event_id"], "merchant_id": approval["merchant_id"],
                           "stage": "executed", "message": f"Approved and executed via {result.execution_mechanism}",
-                          "payload": {"approval_id": approval_id, "recovery_attempt_id": recovery_attempt_id}})
+                          "payload": {"approval_id": approval_id, "recovery_attempt_id": recovery_attempt_id,
+                                      "short_url": short_url}})
     else:
         # A genuine escalate_to_human proposal — there is no automated
         # mechanism to run; approving records that a human is handling this
@@ -408,7 +411,7 @@ def approve_approval(approval_id: int, body: schemas.ApprovalActionIn = schemas.
 
     db.set_approval_status(approval_id, from_status="executing", to_status="executed", resolved_by=body.resolved_by)
     return schemas.ApprovalActionOut(id=approval_id, status="executed", event_id=approval["event_id"],
-                                      recovery_attempt_id=recovery_attempt_id)
+                                      recovery_attempt_id=recovery_attempt_id, short_url=short_url)
 
 
 @router.post("/approvals/{approval_id}/deny", response_model=schemas.ApprovalActionOut)

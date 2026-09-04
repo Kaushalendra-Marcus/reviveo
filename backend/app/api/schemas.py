@@ -64,6 +64,7 @@ class RecoveryAttemptOut(BaseModel):
     status: str
     execution_mode: str
     razorpay_ref: Optional[str] = None
+    short_url: Optional[str] = None
     reference_id: Optional[str] = None
     scheduled_for: Optional[str] = None
     created_at: str
@@ -227,6 +228,7 @@ class ApprovalActionOut(BaseModel):
     status: str
     event_id: str
     recovery_attempt_id: Optional[str] = None
+    short_url: Optional[str] = None
     ok: bool = True
 
 
