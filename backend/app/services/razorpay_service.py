@@ -136,6 +136,28 @@ def fetch_payment_link(razorpay_ref: str) -> Optional[dict]:
         return None
 
 
+def fetch_razorpay_payment(razorpay_payment_id: str) -> Optional[dict]:
+    """Fetch the authoritative payment record when a webhook snapshot has
+    no usable payer contact. Razorpay exposes the payer email on the payment
+    entity; this fallback handles incomplete webhook snapshots safely."""
+    if not razorpay_payment_id or not (settings.is_live and settings.razorpay_configured):
+        return None
+    try:
+        record = _get_client().payment.fetch(razorpay_payment_id)
+    except Exception as exc:  # noqa: BLE001 — webhook processing must degrade safely
+        logger.warning("razorpay payment fetch failed", extra={"context": {
+            "razorpay_payment_id": razorpay_payment_id, "error": str(exc)}})
+        return None
+    if not isinstance(record, dict):
+        return None
+    return {
+        "email": record.get("email"),
+        "contact": record.get("contact"),
+        "customer_id": record.get("customer_id"),
+        "name": record.get("name"),
+    }
+
+
 def fetch_razorpay_customer(razorpay_customer_id: str) -> Optional[dict]:
     """SOURCE 6 — authoritative Razorpay customer record lookup
     (https://razorpay.com/docs/api/customers/). Returns

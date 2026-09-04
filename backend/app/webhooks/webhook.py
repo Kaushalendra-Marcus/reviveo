@@ -155,6 +155,16 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
             "amount": payload.get("amount_paise", payload.get("amount", 0)),
             "id": payload.get("razorpay_payment_id") or payload.get("id"),
         }
+    # The webhook is a snapshot. If its email is absent or a known Razorpay
+    # placeholder, ask Razorpay for the payment record before resolving the
+    # customer. A failed fetch simply leaves the normal payload path intact.
+    payment_id = entity.get("id")
+    if payment_id and db.trusted_email(entity.get("email")) is None:
+        fetched_payment = razorpay_service.fetch_razorpay_payment(payment_id)
+        if fetched_payment:
+            for field in ("email", "contact", "customer_id", "name"):
+                if fetched_payment.get(field):
+                    entity[field] = fetched_payment[field]
     # `customer_id` direct field (synthetic tests) takes precedence over
     # email/phone lookup
     direct_customer_id = payload.get("customer_id")
@@ -166,8 +176,11 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
             # layer (repairs rows previously poisoned with dummy addresses).
             customer = db.resolve_webhook_customer(
                 merchant_id,
-                email=customer.get("email"),
-                phone=customer.get("phone"),
+                # A supplied Reviveo customer id identifies the row, but the
+                # Razorpay payment entity is still authoritative for the
+                # payer contact captured on this transaction.
+                email=entity.get("email") or customer.get("email"),
+                phone=entity.get("contact") or customer.get("phone"),
                 razorpay_customer_id=customer.get("razorpay_customer_id"),
                 name=customer.get("name"),
             ) or customer

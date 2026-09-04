@@ -81,6 +81,19 @@ def test_exact_incident_placeholder_vs_trusted(seeded_db):
     assert VOID not in (notifs[0]["recipient"] or "")
 
 
+def test_direct_customer_id_backfills_email_from_payment(seeded_db):
+    db.insert_customer({"id": "cust_direct", "merchant_id": MERCHANT,
+                        "name": "Direct Customer", "email": None,
+                        "phone": "+915555555555"})
+    payload = _failed_envelope(email="direct@example.com", contact="+915555555555")
+    payload["customer_id"] = "cust_direct"
+
+    event = _ingest(payload)
+
+    assert event["customer_id"] == "cust_direct"
+    assert db.get_customer(MERCHANT, "cust_direct")["email"] == "direct@example.com"
+
+
 # ── §19: normal customer — full identity chain persisted ────────────────────
 def test_normal_customer_full_chain(seeded_db):
     event = _ingest(_failed_envelope(email="alice@example.com",
