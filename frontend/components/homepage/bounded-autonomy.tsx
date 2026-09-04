@@ -13,7 +13,7 @@ const constraints = [
 export function BoundedAutonomy() {
   return (
     <section id="safety" className="bg-slate-950 py-24 text-white">
-      <div className="mx-auto max-w-6xl px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl px-6 lg:px-8">
         <div className="grid gap-12 lg:grid-cols-2 lg:items-center lg:gap-16">
           <div>
             <p className="text-sm font-bold uppercase tracking-[0.18em] text-blue-400">

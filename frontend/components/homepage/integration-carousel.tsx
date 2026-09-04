@@ -90,7 +90,7 @@ export function IntegrationCarousel() {
   });
 
   return (
-    <section className="relative overflow-hidden bg-[#030303] py-20 sm:py-28">
+    <section className="relative overflow-hidden bg-[#030303] py-16 sm:py-24">
       <div className="mx-auto max-w-7xl px-6 lg:px-8">
         <div className="grid items-center gap-14 lg:grid-cols-[0.9fr_1.1fr]">
           {/* LEFT CONTENT */}
@@ -99,14 +99,14 @@ export function IntegrationCarousel() {
               Built for subscription businesses
             </p>
 
-            <h2 className="mt-4 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+            <h2 className="mt-4 text-3xl font-bold tracking-tight text-white sm:text-4xl">
               Failed payments happen
               <span className="block text-white/45">
                 everywhere subscriptions do.
               </span>
             </h2>
 
-            <p className="mt-6 max-w-lg text-base leading-7 text-zinc-400">
+            <p className="mt-6 max-w-lg text-base leading-7 text-slate-400">
               Streaming, food delivery, edtech, or anything billed on a recurring
               cycle — a single failed payment can quietly turn into a lost
               customer. Reviveo is built for exactly this category of business.
@@ -225,7 +225,7 @@ export function IntegrationCarousel() {
 
             {/* subtle label */}
 
-            <div className="pointer-events-none absolute bottom-5 left-1/2 z-40 -translate-x-1/2 whitespace-nowrap text-[11px] tracking-[0.08em] text-zinc-600">
+            <div className="pointer-events-none absolute bottom-5 left-1/2 z-40 -translate-x-1/2 whitespace-nowrap text-[11px] tracking-[0.08em] text-slate-600">
               THE KIND OF BUSINESSES THIS HAPPENS TO
             </div>
           </div>

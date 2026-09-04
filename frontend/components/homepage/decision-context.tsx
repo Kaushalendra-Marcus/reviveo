@@ -67,7 +67,7 @@ const toneText: Record<StageTone, string> = {
 export function DecisionContext() {
   return (
     <section id="how-it-works" className="border-b border-slate-200 bg-slate-50 py-24">
-      <div className="mx-auto max-w-6xl px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl px-6 lg:px-8">
         <div className="mx-auto max-w-2xl text-center">
           <p className="text-sm font-bold uppercase tracking-[0.18em] text-blue-700">
             Inside the intelligence layer
