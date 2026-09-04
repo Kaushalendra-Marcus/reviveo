@@ -99,12 +99,15 @@ def _route_event(merchant_id: str, event_name: str, payload: dict) -> Optional[d
 
 
 def _find_customer_by_contact(merchant_id: str, email: Optional[str], phone: Optional[str]) -> Optional[dict]:
-    if email:
-        row = db.query_one("SELECT * FROM customers WHERE merchant_id=? AND email=?", (merchant_id, email))
+    """Legacy lookup-first helper kept for compatibility — resolution order
+    A (email) then B (phone), normalized. Prefer `db.resolve_webhook_customer`
+    for webhook ingest (adds Razorpay-id mapping + minimal-record creation)."""
+    if db.normalize_email(email):
+        row = db.get_customer_by_email(merchant_id, db.normalize_email(email))  # type: ignore[arg-type]
         if row:
             return row
-    if phone:
-        row = db.query_one("SELECT * FROM customers WHERE merchant_id=? AND phone=?", (merchant_id, phone))
+    if db.normalize_phone(phone):
+        row = db.get_customer_by_phone(merchant_id, db.normalize_phone(phone))  # type: ignore[arg-type]
         if row:
             return row
     return None
@@ -120,6 +123,7 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
         entity = {
             "email": payload.get("customer_email") or payload.get("email"),
             "contact": payload.get("customer_phone") or payload.get("contact"),
+            "customer_id": payload.get("razorpay_customer_id"),
             "invoice_id": payload.get("invoice_id"),
             "error_reason": payload.get("error_code"),
             "error_code": payload.get("error_code"),
@@ -132,7 +136,17 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
     if direct_customer_id:
         customer = db.get_customer(merchant_id, direct_customer_id)
     else:
-        customer = _find_customer_by_contact(merchant_id, entity.get("email"), entity.get("contact"))
+        # Real Razorpay payment entities carry `email`, `contact` (phone)
+        # and `customer_id` (Razorpay `cust_…`) at the entity top level;
+        # `notes` may additionally carry merchant-supplied contact details.
+        notes = entity.get("notes") if isinstance(entity.get("notes"), dict) else {}
+        customer = db.resolve_webhook_customer(
+            merchant_id,
+            email=(entity.get("email") or notes.get("email")),
+            phone=(entity.get("contact") or notes.get("contact") or notes.get("phone")),
+            razorpay_customer_id=entity.get("customer_id"),
+            name=entity.get("name") or notes.get("name"),
+        )
 
     event = {
         "event_id": f"evt_{uuid.uuid4().hex[:16]}",
@@ -151,6 +165,8 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     db.insert_event(event)
+    if event["customer_id"]:
+        db.incr_customer_failed_count(merchant_id, event["customer_id"])
     pipeline.process_event(db.get_event(event["event_id"]))
 
 

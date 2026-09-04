@@ -26,6 +26,15 @@ from . import ai_service
 logger = get_logger("reviveo.notification_service")
 
 
+def _recipient_domain(recipient: Optional[str]) -> str:
+    """Domain-only recipient identifier for logs — enough to diagnose
+    provider rejections (e.g. unverified test domains) without ever logging
+    a full customer email address, API key, or auth header."""
+    if isinstance(recipient, str) and "@" in recipient:
+        return recipient.split("@")[-1].lower() or "unknown"
+    return "unknown"
+
+
 @dataclass(frozen=True)
 class NotificationResult:
     notification_id: str
@@ -75,10 +84,14 @@ class ResendEmailProvider(EmailProvider):
                 return True, message_id, None
         except urllib.error.HTTPError as exc:
             err_text = exc.read().decode("utf-8") if exc.fp else str(exc)
-            logger.warning("resend email sending failed", extra={"context": {"code": exc.code, "error": err_text}})
+            logger.warning("resend email sending failed", extra={"context": {
+                "code": exc.code, "error": err_text,
+                "recipient_domain": _recipient_domain(to), "provider": "resend"}})
             return False, None, f"Resend API error ({exc.code}): {err_text}"
         except Exception as exc:  # noqa: BLE001
-            logger.warning("resend email network exception", extra={"context": {"error": str(exc)}})
+            logger.warning("resend email network exception", extra={"context": {
+                "error": str(exc), "recipient_domain": _recipient_domain(to),
+                "provider": "resend"}})
             return False, None, f"Email sending exception: {exc}"
 
 
@@ -211,6 +224,10 @@ def send_customer_notification(
         else:
             status = "failed"
             error_detail = err
+            logger.warning("notification send failed", extra={"context": {
+                "event_id": event_id, "recovery_attempt_id": attempt_id,
+                "recipient_domain": _recipient_domain(recipient),
+                "provider": "resend", "error": (err or "")[:300]}})
     else:
         status = "simulated"
         provider_message_id = f"sim_msg_{uuid.uuid4().hex[:12]}"
@@ -238,7 +255,11 @@ def send_customer_notification(
 
     logger.info("customer notification processed", extra={"context": {
         "event_id": event_id, "recovery_attempt_id": attempt_id,
-        "status": status, "recipient": recipient,
+        "notification_id": notification_id, "status": status,
+        "recipient_domain": _recipient_domain(recipient if status != "skipped" else None),
+        "provider_message_id": provider_message_id,
+        "ai_generated": ai_result.used, "ai_model": ai_result.model,
+        "ai_latency_ms": ai_result.latency_ms,
     }})
 
     return NotificationResult(

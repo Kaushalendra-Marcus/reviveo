@@ -24,6 +24,14 @@ import {
   titleCase,
 } from "@/lib/formatters";
 
+function aiGenLabel(status: string, aiGenerated: boolean): string {
+  // A skipped notification exits before message drafting, so ai_generated=false
+  // there means "not generated" — not "fallback". Fallback only applies when
+  // a message was actually drafted from the deterministic template.
+  if (status === "skipped") return "Not Generated";
+  return aiGenerated ? "AI Generated" : "Fallback";
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -176,7 +184,7 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                 {primaryNotification ? (
                   <>
                     <div className="text-xs text-slate-600 truncate">
-                      To: <span className="font-mono text-slate-800">{primaryNotification.recipient}</span>
+                      To: <span className="font-mono text-slate-800">{primaryNotification.recipient === "none" ? "No email on file" : primaryNotification.recipient}</span>
                     </div>
                     {primaryNotification.subject ? (
                       <div className="text-xs text-slate-500 truncate" title={primaryNotification.subject}>
@@ -300,7 +308,7 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                       {event.notifications.map((n) => (
                         <TableRow key={n.notification_id} className="border-slate-100">
                           <TableCell className="font-medium text-slate-700 capitalize">{n.channel}</TableCell>
-                          <TableCell className="font-mono text-xs text-slate-700">{n.recipient}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-700">{n.recipient === "none" ? "No email on file" : n.recipient}</TableCell>
                           <TableCell className="text-xs text-slate-900 font-medium">{n.subject ?? "—"}</TableCell>
                           <TableCell>
                             <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -312,7 +320,7 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                               {titleCase(n.status)}
                             </span>
                           </TableCell>
-                          <TableCell className="text-xs text-slate-500">{n.ai_generated ? "Yes" : "Fallback"}</TableCell>
+                          <TableCell className="text-xs text-slate-500">{aiGenLabel(n.status, n.ai_generated)}</TableCell>
                           <TableCell className="text-xs text-slate-500">{n.sent_at ? formatDateTime(n.sent_at) : formatDateTime(n.created_at)}</TableCell>
                         </TableRow>
                       ))}

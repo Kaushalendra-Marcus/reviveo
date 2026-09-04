@@ -29,10 +29,21 @@ CREATE TABLE IF NOT EXISTS customers (
     name               TEXT NOT NULL,
     email              TEXT,
     phone              TEXT,
+    -- Razorpay `cust_…` identifier when known (nullable; backfilled from
+    -- payment.failed entities and used for correlation before falling back
+    -- to minimal-record creation). NULL for seeded/synthetic customers.
+    razorpay_customer_id TEXT,
     total_recovered_paise INTEGER NOT NULL DEFAULT 0,
     failed_payment_count  INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_customers_email ON customers (merchant_id, email);
+CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (merchant_id, phone);
+-- NOTE: idx_customers_rzp (on the nullable razorpay_customer_id column) is
+-- created by db._migrate_existing_dbs(), not here: CREATE INDEX fails on
+-- pre-existing customers tables that do not have the column yet, which would
+-- abort the whole executescript on startup. Fresh DBs get it via the same
+-- migration, which always runs inside init_db().
 
 CREATE TABLE IF NOT EXISTS subscriptions (
     id                 TEXT PRIMARY KEY,

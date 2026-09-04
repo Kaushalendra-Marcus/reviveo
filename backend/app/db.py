@@ -7,8 +7,10 @@ never the callers. Money is stored in paise (INTEGER).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -66,6 +68,21 @@ def init_db() -> None:
     conn = _connect()
     conn.executescript(_SCHEMA_PATH.read_text())
     conn.commit()
+    _migrate_existing_dbs()
+
+
+def _migrate_existing_dbs() -> None:
+    """Idempotent in-place upgrades for databases created before the current
+    schema (CREATE TABLE IF NOT EXISTS never alters an existing table, so new
+    nullable columns/indexes need explicit handling). Safe to run on every
+    startup: each step checks before touching anything and never rewrites or
+    deletes existing rows."""
+    cols = {r["name"] for r in _connect().execute("PRAGMA table_info(customers)").fetchall()}
+    if "razorpay_customer_id" not in cols:
+        execute("ALTER TABLE customers ADD COLUMN razorpay_customer_id TEXT")
+    execute("CREATE INDEX IF NOT EXISTS idx_customers_email ON customers (merchant_id, email)")
+    execute("CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (merchant_id, phone)")
+    execute("CREATE INDEX IF NOT EXISTS idx_customers_rzp ON customers (merchant_id, razorpay_customer_id)")
 
 
 # ── merchants ────────────────────────────────────────────────────────────────
@@ -146,10 +163,11 @@ def incr_daily_counter(merchant_id: str, *, value_paise: int = 0,
 def insert_customer(c: dict) -> None:
     execute(
         """INSERT OR REPLACE INTO customers
-           (id, merchant_id, name, email, phone, total_recovered_paise,
-            failed_payment_count, created_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
+           (id, merchant_id, name, email, phone, razorpay_customer_id,
+            total_recovered_paise, failed_payment_count, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
         (c["id"], c["merchant_id"], c["name"], c.get("email"), c.get("phone"),
+         c.get("razorpay_customer_id"),
          c.get("total_recovered_paise", 0), c.get("failed_payment_count", 0),
          c.get("created_at", now_iso())),
     )
@@ -159,6 +177,28 @@ def get_customer(merchant_id: str, customer_id: str) -> Optional[dict]:
     return query_one(
         "SELECT * FROM customers WHERE merchant_id=? AND id=?",
         (merchant_id, customer_id),
+    )
+
+
+def get_customer_by_email(merchant_id: str, email: str) -> Optional[dict]:
+    """Case-insensitive exact email match within one merchant's scope."""
+    return query_one(
+        "SELECT * FROM customers WHERE merchant_id=? AND LOWER(email)=LOWER(?)",
+        (merchant_id, email),
+    )
+
+
+def get_customer_by_phone(merchant_id: str, phone: str) -> Optional[dict]:
+    return query_one(
+        "SELECT * FROM customers WHERE merchant_id=? AND phone=?",
+        (merchant_id, phone),
+    )
+
+
+def get_customer_by_razorpay_id(merchant_id: str, razorpay_customer_id: str) -> Optional[dict]:
+    return query_one(
+        "SELECT * FROM customers WHERE merchant_id=? AND razorpay_customer_id=?",
+        (merchant_id, razorpay_customer_id),
     )
 
 
@@ -188,6 +228,129 @@ def incr_customer_failed_count(merchant_id: str, customer_id: str) -> None:
         "WHERE merchant_id=? AND id=?",
         (merchant_id, customer_id),
     )
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def normalize_email(value: Any) -> Optional[str]:
+    """Lowercased/stripped email, or None when it is not a plausible address.
+    Never invents data — garbage in yields None, never a placeholder."""
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().lower()
+    return cleaned if _EMAIL_RE.match(cleaned) else None
+
+
+def normalize_phone(value: Any) -> Optional[str]:
+    """Stripped phone (spaces/dashes/parens removed), or None when it does
+    not look like a real dialable number. Never invents data."""
+    if not isinstance(value, str):
+        return None
+    cleaned = re.sub(r"[\s\-()]", "", value.strip())
+    if not re.fullmatch(r"\+?\d{7,15}", cleaned):
+        return None
+    return cleaned
+
+
+def _backfill_customer_contact(row: dict, *, email: Optional[str],
+                               phone: Optional[str],
+                               razorpay_customer_id: Optional[str]) -> dict:
+    """Fill only EMPTY contact fields on an existing customer — never
+    overwrite a stored email/phone/razorpay id with a different value, so a
+    webhook carrying another person's contact can never hijack a record."""
+    updates: dict[str, Any] = {}
+    if email and not row.get("email"):
+        updates["email"] = email
+    if phone and not row.get("phone"):
+        updates["phone"] = phone
+    if razorpay_customer_id and not row.get("razorpay_customer_id"):
+        updates["razorpay_customer_id"] = razorpay_customer_id
+    if updates:
+        cols = ", ".join(f"{k}=?" for k in updates)
+        execute(f"UPDATE customers SET {cols} WHERE merchant_id=? AND id=?",
+                (*updates.values(), row["merchant_id"], row["id"]))
+        row = get_customer(row["merchant_id"], row["id"]) or row
+    return row
+
+
+def resolve_webhook_customer(
+    merchant_id: str,
+    *,
+    email: Any = None,
+    phone: Any = None,
+    razorpay_customer_id: Any = None,
+    name: Any = None,
+) -> Optional[dict]:
+    """Idempotent webhook customer correlation (preferred order):
+
+      A. exact email match → existing customer
+      B. exact phone match → existing customer
+      C. stored Razorpay customer-id mapping → existing customer
+      D. valid email and/or phone present → create a minimal record
+
+    Returns the customer row, or None when the payload carries no usable
+    contact information (callers must then keep the notification skipped —
+    this function NEVER invents an email, name, or phone number).
+    Duplicate webhook delivery is safe: every branch is lookup-first, and
+    creation uses a merchant-scoped re-check so the same identity always
+    resolves to the same row. `merchant_id` must be the server-side context,
+    never a caller-supplied value.
+    """
+    clean_email = normalize_email(email)
+    clean_phone = normalize_phone(phone)
+    rzp_id = razorpay_customer_id.strip() if isinstance(razorpay_customer_id, str) and razorpay_customer_id.strip() else None
+
+    if clean_email:
+        row = get_customer_by_email(merchant_id, clean_email)
+        if row:
+            return _backfill_customer_contact(row, email=clean_email,
+                                              phone=clean_phone,
+                                              razorpay_customer_id=rzp_id)
+    if clean_phone:
+        row = get_customer_by_phone(merchant_id, clean_phone)
+        if row:
+            return _backfill_customer_contact(row, email=clean_email,
+                                              phone=clean_phone,
+                                              razorpay_customer_id=rzp_id)
+    if rzp_id:
+        row = get_customer_by_razorpay_id(merchant_id, rzp_id)
+        if row:
+            return _backfill_customer_contact(row, email=clean_email,
+                                              phone=clean_phone,
+                                              razorpay_customer_id=rzp_id)
+
+    if not clean_email and not clean_phone:
+        return None
+
+    # D — minimal record from REAL payload data only. `name` is NOT NULL in
+    # the schema, so derive it from the actual contact rather than a
+    # placeholder: an explicit name if Razorpay sent one, else the email,
+    # else the phone.
+    display_name = (name.strip() if isinstance(name, str) and name.strip()
+                    else clean_email or clean_phone or rzp_id)
+    customer_id = f"cust_{uuid.uuid4().hex[:12]}"
+    try:
+        execute(
+            """INSERT INTO customers
+               (id, merchant_id, name, email, phone, razorpay_customer_id,
+                total_recovered_paise, failed_payment_count, created_at)
+               VALUES (?,?,?,?,?,?,0,0,?)""",
+            (customer_id, merchant_id, display_name, clean_email, clean_phone,
+             rzp_id, now_iso()),
+        )
+    except sqlite3.IntegrityError:
+        pass  # lost a create race — fall through to the re-check below
+    # Re-check by every identity we hold so concurrent duplicates converge
+    # on one row instead of creating a second.
+    for lookup in (lambda: get_customer_by_email(merchant_id, clean_email) if clean_email else None,
+                   lambda: get_customer_by_phone(merchant_id, clean_phone) if clean_phone else None,
+                   lambda: get_customer_by_razorpay_id(merchant_id, rzp_id) if rzp_id else None,
+                   lambda: get_customer(merchant_id, customer_id)):
+        row = lookup()
+        if row:
+            return row
+    return None
 
 
 # ── subscriptions ─────────────────────────────────────────────────────────────
