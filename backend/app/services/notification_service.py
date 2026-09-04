@@ -134,12 +134,26 @@ def send_customer_notification(
             ai_latency_ms=existing.get("ai_latency_ms"),
         )
 
-    recipient = (customer or {}).get("email")
+    recipient = db.trusted_email((customer or {}).get("email"))
 
-    # 2. Missing customer email check
+    # Final safety check: never send to a known placeholder/test identity.
+    # Re-read the stored record (webhook-time data may be stale) and take
+    # only a trusted address. A placeholder must never override — or be sent
+    # in place of — a real customer email.
+    if not recipient and event.get("customer_id"):
+        fresh = db.get_customer(merchant_id, event["customer_id"])
+        if fresh is not None:
+            customer = fresh
+            recipient = db.trusted_email(fresh.get("email"))
+            if recipient:
+                logger.info("notification recipient resolved from stored record", extra={"context": {
+                    "event_id": event_id, "recovery_attempt_id": attempt_id,
+                    "recipient_domain": _recipient_domain(recipient)}})
+
+    # 2. Missing/trusted customer email check
     if not recipient:
         notification_id = f"notif_{uuid.uuid4().hex[:16]}"
-        error_msg = "No customer email address on file"
+        error_msg = "No trusted customer email available"
         db.insert_notification({
             "notification_id": notification_id,
             "merchant_id": merchant_id,

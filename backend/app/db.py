@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from .config import settings
+from .logging_config import get_logger
+
+logger = get_logger("reviveo.customers")
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _local = threading.local()
@@ -232,6 +235,32 @@ def incr_customer_failed_count(merchant_id: str, customer_id: str) -> None:
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# Razorpay test-mode placeholder identities CONFIRMED from live
+# payment.failed payloads (evt_420edad734e64f08 carried
+# "email": "void@razorpay.com" in the payment entity). These are Razorpay's
+# own dummy values — never a real payer address — so they must never become
+# a Reviveo customer email nor a notification recipient. Keep this set to
+# exactly-confirmed values only: no giant blacklist, no pattern rules that
+# could reject legitimate customer addresses (e.g. customer@example.com
+# must keep working). Add a value here only with payload evidence.
+PLACEHOLDER_EMAILS = frozenset({"void@razorpay.com"})
+
+
+def is_placeholder_email(value: Any) -> bool:
+    """True for known Razorpay/test placeholder identities. Case-insensitive
+    exact match against confirmed values only."""
+    return (isinstance(value, str) and value.strip().lower() in PLACEHOLDER_EMAILS)
+
+
+def trusted_email(value: Any) -> Optional[str]:
+    """A normalized email safe to store and send to: valid format AND NOT a
+    known placeholder. Returns None otherwise — callers must treat None as
+    'no usable email', never fall back to the raw value."""
+    clean = normalize_email(value)
+    if clean is None or is_placeholder_email(clean):
+        return None
+    return clean
+
 
 def normalize_email(value: Any) -> Optional[str]:
     """Lowercased/stripped email, or None when it is not a plausible address.
@@ -256,15 +285,22 @@ def normalize_phone(value: Any) -> Optional[str]:
 def _backfill_customer_contact(row: dict, *, email: Optional[str],
                                phone: Optional[str],
                                razorpay_customer_id: Optional[str]) -> dict:
-    """Fill only EMPTY contact fields on an existing customer — never
-    overwrite a stored email/phone/razorpay id with a different value, so a
-    webhook carrying another person's contact can never hijack a record."""
+    """Fill only EMPTY-or-placeholder contact fields on an existing customer.
+
+    Trust rules (a placeholder must never override a real address):
+    - `email` must already be trusted (use `trusted_email()` before calling);
+      it is written only when the stored email is missing or itself a known
+      placeholder. A stored trusted email is NEVER overwritten.
+    - phone / razorpay id fill empty fields only, never overwrite.
+    """
     updates: dict[str, Any] = {}
-    if email and not row.get("email"):
-        updates["email"] = email
-    if phone and not row.get("phone"):
+    stored_email = (row.get("email") or "").strip()
+    if email and (not stored_email or is_placeholder_email(stored_email)):
+        if stored_email.lower() != email.lower():
+            updates["email"] = email
+    if phone and not (row.get("phone") or "").strip():
         updates["phone"] = phone
-    if razorpay_customer_id and not row.get("razorpay_customer_id"):
+    if razorpay_customer_id and not (row.get("razorpay_customer_id") or "").strip():
         updates["razorpay_customer_id"] = razorpay_customer_id
     if updates:
         cols = ", ".join(f"{k}=?" for k in updates)
@@ -281,76 +317,143 @@ def resolve_webhook_customer(
     phone: Any = None,
     razorpay_customer_id: Any = None,
     name: Any = None,
+    extra_contacts: Iterable[tuple[str, Any, Any]] = (),
 ) -> Optional[dict]:
-    """Idempotent webhook customer correlation (preferred order):
+    """Idempotent webhook customer correlation with trusted-email priority.
 
-      A. exact email match → existing customer
-      B. exact phone match → existing customer
-      C. stored Razorpay customer-id mapping → existing customer
-      D. valid email and/or phone present → create a minimal record
+    `extra_contacts` carries higher-trust contact from payload objects that
+    outrank the raw payment-entity contact: an iterable of
+    `(source, email, phone)` where source is e.g. `"payment_link"`,
+    `"order"`, or `"notes"`. Callers must pass merchant_id from server-side
+    context, never from the request body.
+
+    Resolution order (a placeholder email never overrides a real one):
+      1. existing customer with a trusted email (extras first, then entity)
+      2. existing customer matched by phone (extras, then entity)
+      3. stored Razorpay customer-id mapping
+      4. trusted extra (link/order/notes) email → reuse or minimal create
+      5. entity email, but ONLY when trusted (not a placeholder)
+      6. phone-only record when a valid phone exists but no trusted email
+      7. None → caller must keep the notification skipped
 
     Returns the customer row, or None when the payload carries no usable
-    contact information (callers must then keep the notification skipped —
-    this function NEVER invents an email, name, or phone number).
-    Duplicate webhook delivery is safe: every branch is lookup-first, and
-    creation uses a merchant-scoped re-check so the same identity always
-    resolves to the same row. `merchant_id` must be the server-side context,
-    never a caller-supplied value.
+    contact information. NEVER invents an email, name, or phone number;
+    NEVER stores a placeholder as a customer email.
     """
-    clean_email = normalize_email(email)
-    clean_phone = normalize_phone(phone)
     rzp_id = razorpay_customer_id.strip() if isinstance(razorpay_customer_id, str) and razorpay_customer_id.strip() else None
+    entity_email_raw = email
+    entity_phone = normalize_phone(phone)
 
-    if clean_email:
-        row = get_customer_by_email(merchant_id, clean_email)
-        if row:
-            return _backfill_customer_contact(row, email=clean_email,
-                                              phone=clean_phone,
-                                              razorpay_customer_id=rzp_id)
-    if clean_phone:
-        row = get_customer_by_phone(merchant_id, clean_phone)
-        if row:
-            return _backfill_customer_contact(row, email=clean_email,
-                                              phone=clean_phone,
-                                              razorpay_customer_id=rzp_id)
-    if rzp_id:
-        row = get_customer_by_razorpay_id(merchant_id, rzp_id)
-        if row:
-            return _backfill_customer_contact(row, email=clean_email,
-                                              phone=clean_phone,
-                                              razorpay_customer_id=rzp_id)
+    # Trusted extras first — these outrank the raw entity contact.
+    extras: list[tuple[str, Optional[str], Optional[str]]] = []
+    for source, ex_email, ex_phone in (extra_contacts or ()):
+        t_email = trusted_email(ex_email)
+        t_phone = normalize_phone(ex_phone)
+        if t_email or t_phone:
+            extras.append((str(source), t_email, t_phone))
 
-    if not clean_email and not clean_phone:
-        return None
+    entity_trusted = trusted_email(entity_email_raw)
+    if entity_email_raw is not None and entity_trusted is None and normalize_email(entity_email_raw):
+        logger.info("placeholder email rejected", extra={"context": {
+            "merchant_id": merchant_id,
+            "recipient_domain": _domain_of(entity_email_raw),
+            "source": "payment_entity"}})
 
-    # D — minimal record from REAL payload data only. `name` is NOT NULL in
-    # the schema, so derive it from the actual contact rather than a
-    # placeholder: an explicit name if Razorpay sent one, else the email,
-    # else the phone.
-    display_name = (name.strip() if isinstance(name, str) and name.strip()
-                    else clean_email or clean_phone or rzp_id)
-    customer_id = f"cust_{uuid.uuid4().hex[:12]}"
-    try:
-        execute(
-            """INSERT INTO customers
-               (id, merchant_id, name, email, phone, razorpay_customer_id,
-                total_recovered_paise, failed_payment_count, created_at)
-               VALUES (?,?,?,?,?,?,0,0,?)""",
-            (customer_id, merchant_id, display_name, clean_email, clean_phone,
-             rzp_id, now_iso()),
-        )
-    except sqlite3.IntegrityError:
-        pass  # lost a create race — fall through to the re-check below
-    # Re-check by every identity we hold so concurrent duplicates converge
-    # on one row instead of creating a second.
-    for lookup in (lambda: get_customer_by_email(merchant_id, clean_email) if clean_email else None,
-                   lambda: get_customer_by_phone(merchant_id, clean_phone) if clean_phone else None,
-                   lambda: get_customer_by_razorpay_id(merchant_id, rzp_id) if rzp_id else None,
-                   lambda: get_customer(merchant_id, customer_id)):
-        row = lookup()
+    def _matched(row: Optional[dict], source: str) -> Optional[dict]:
+        if row is None:
+            return None
+        best_email = next((e for _, e, _ in extras if e), None) or entity_trusted
+        best_phone = entity_phone or next((p for _, _, p in extras if p), None)
+        row = _backfill_customer_contact(row, email=best_email,
+                                         phone=best_phone,
+                                         razorpay_customer_id=rzp_id)
+        logger.info("customer matched", extra={"context": {
+            "merchant_id": merchant_id, "customer_id": row["id"],
+            "email_source": source,
+            "recipient_domain": _domain_of(row.get("email"))}})
+        return row
+
+    # 1 — existing customer with a trusted email (extras outrank entity).
+    for src, t_email, _ in extras:
+        if t_email:
+            row = _matched(get_customer_by_email(merchant_id, t_email),
+                           f"existing_customer:{src}")
+            if row:
+                return row
+    if entity_trusted:
+        row = _matched(get_customer_by_email(merchant_id, entity_trusted),
+                       "existing_customer:payment_entity")
         if row:
             return row
+
+    # 2 — phone match (extras, then entity).
+    for src, _, t_phone in extras:
+        if t_phone:
+            row = _matched(get_customer_by_phone(merchant_id, t_phone),
+                           f"existing_customer:phone:{src}")
+            if row:
+                return row
+    if entity_phone:
+        row = _matched(get_customer_by_phone(merchant_id, entity_phone),
+                       "existing_customer:phone:payment_entity")
+        if row:
+            return row
+
+    # 3 — stored Razorpay customer-id mapping.
+    if rzp_id:
+        row = _matched(get_customer_by_razorpay_id(merchant_id, rzp_id),
+                       "existing_customer:razorpay_customer_id")
+        if row:
+            return row
+
+    # 4/5 — minimal record from REAL data only (trusted extras first).
+    create_email = next((e for _, e, _ in extras if e), None) or entity_trusted
+    create_phone = entity_phone or next((p for _, _, p in extras if p), None)
+    if create_email or create_phone:
+        if create_email:
+            row = get_customer_by_email(merchant_id, create_email)
+            if row:
+                return _matched(row, "existing_customer:trusted_email")
+        if create_phone:
+            row = get_customer_by_phone(merchant_id, create_phone)
+            if row:
+                return _matched(row, "existing_customer:phone")
+        display_name = (name.strip() if isinstance(name, str) and name.strip()
+                        else create_email or create_phone or rzp_id)
+        customer_id = f"cust_{uuid.uuid4().hex[:12]}"
+        try:
+            execute(
+                """INSERT INTO customers
+                   (id, merchant_id, name, email, phone, razorpay_customer_id,
+                    total_recovered_paise, failed_payment_count, created_at)
+                   VALUES (?,?,?,?,?,?,0,0,?)""",
+                (customer_id, merchant_id, display_name, create_email, create_phone,
+                 rzp_id, now_iso()),
+            )
+        except sqlite3.IntegrityError:
+            pass  # lost a create race — fall through to the re-check below
+        for lookup in (lambda: get_customer_by_email(merchant_id, create_email) if create_email else None,
+                       lambda: get_customer_by_phone(merchant_id, create_phone) if create_phone else None,
+                       lambda: get_customer_by_razorpay_id(merchant_id, rzp_id) if rzp_id else None,
+                       lambda: get_customer(merchant_id, customer_id)):
+            row = lookup()
+            if row:
+                logger.info("customer created", extra={"context": {
+                    "merchant_id": merchant_id, "customer_id": row["id"],
+                    "email_source": "webhook_trusted_contact",
+                    "recipient_domain": _domain_of(row.get("email"))}})
+                return row
+
+    # 6 — genuinely no usable contact: no customer, no email, no send.
+    logger.info("customer resolution found no usable contact", extra={"context": {
+        "merchant_id": merchant_id}})
     return None
+
+
+def _domain_of(value: Any) -> str:
+    if isinstance(value, str) and "@" in value:
+        return value.split("@")[-1].lower() or "unknown"
+    return "unknown"
 
 
 # ── subscriptions ─────────────────────────────────────────────────────────────

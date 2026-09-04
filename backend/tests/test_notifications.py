@@ -111,7 +111,7 @@ def test_scenario_c_missing_customer_email_skipped(seeded_db):
     notifs = db.list_notifications_for_event(event_id)
     assert len(notifs) == 1
     assert notifs[0]["status"] == "skipped"
-    assert notifs[0]["error"] == "No customer email address on file"
+    assert notifs[0]["error"] == "No trusted customer email available"
 
 
 def test_scenario_d_guardrail_blocks_contact_no_email(seeded_db):

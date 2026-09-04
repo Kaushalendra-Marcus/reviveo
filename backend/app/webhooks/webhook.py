@@ -135,17 +135,51 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
     direct_customer_id = payload.get("customer_id")
     if direct_customer_id:
         customer = db.get_customer(merchant_id, direct_customer_id)
+        if customer:
+            # Even a directly-addressed record must never carry a placeholder
+            # into the pipeline: re-resolve its contact through the trust
+            # layer (repairs rows previously poisoned with dummy addresses).
+            customer = db.resolve_webhook_customer(
+                merchant_id,
+                email=customer.get("email"),
+                phone=customer.get("phone"),
+                razorpay_customer_id=customer.get("razorpay_customer_id"),
+                name=customer.get("name"),
+            ) or customer
     else:
         # Real Razorpay payment entities carry `email`, `contact` (phone)
-        # and `customer_id` (Razorpay `cust_…`) at the entity top level;
-        # `notes` may additionally carry merchant-supplied contact details.
+        # and `customer_id` (Razorpay `cust_…`) at the entity top level.
+        # Higher-trust contact can also ride along in payload objects that
+        # outrank the raw entity contact (Flow B: the payer typed their real
+        # address on a payment-link/order checkout while the entity itself
+        # carries a test-mode dummy like void@razorpay.com):
+        #   payload.payment_link.entity.customer.{email,contact}
+        #   payload.order.entity.notes.{email,contact}
+        #   entity.notes.{email,contact,phone}
+        # All correlation stays payload-local here — no live Razorpay API
+        # calls on the webhook path (keeps ingest fast and failure-proof);
+        # see razorpay_service.fetch_payment_link for operator reconciliation.
+        inner = payload.get("payload", {}) if isinstance(payload.get("payload"), dict) else {}
+        link_customer = (inner.get("payment_link", {}) or {}).get("entity", {}).get("customer", {}) or {}
+        order_notes = (inner.get("order", {}) or {}).get("entity", {}).get("notes", {}) or {}
+        if not isinstance(order_notes, dict):
+            order_notes = {}
         notes = entity.get("notes") if isinstance(entity.get("notes"), dict) else {}
+        extra_contacts = [
+            ("payment_link",
+             link_customer.get("email"), link_customer.get("contact")),
+            ("order",
+             order_notes.get("email"), order_notes.get("contact") or order_notes.get("phone")),
+            ("notes",
+             notes.get("email"), notes.get("contact") or notes.get("phone")),
+        ]
         customer = db.resolve_webhook_customer(
             merchant_id,
-            email=(entity.get("email") or notes.get("email")),
-            phone=(entity.get("contact") or notes.get("contact") or notes.get("phone")),
+            email=(entity.get("email")),
+            phone=(entity.get("contact")),
             razorpay_customer_id=entity.get("customer_id"),
             name=entity.get("name") or notes.get("name"),
+            extra_contacts=extra_contacts,
         )
 
     event = {
@@ -167,6 +201,13 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
     db.insert_event(event)
     if event["customer_id"]:
         db.incr_customer_failed_count(merchant_id, event["customer_id"])
+    resolved = db.get_customer(merchant_id, event["customer_id"]) if event["customer_id"] else None
+    logger.info("payment.failed customer resolution", extra={"context": {
+        "event_id": event["event_id"],
+        "customer_id": event["customer_id"],
+        "has_trusted_email": bool(resolved and db.trusted_email(resolved.get("email"))),
+        "recipient_domain": db._domain_of(resolved.get("email")) if resolved else "unknown",
+    }})
     pipeline.process_event(db.get_event(event["event_id"]))
 
 

@@ -150,7 +150,7 @@ def test_f_no_contact_skips_and_never_calls_resend(seeded_db, monkeypatch):
         assert len(notifs) == 1
         assert notifs[0]["status"] == "skipped"
         assert notifs[0]["recipient"] == "none"
-        assert "No customer email" in (notifs[0]["error"] or "")
+        assert "No trusted customer email" in (notifs[0]["error"] or "")
 
 
 # ── TEST G: live + enabled + key → Resend called once, status sent ──────────
