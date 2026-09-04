@@ -184,7 +184,7 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                 {primaryNotification ? (
                   <>
                     <div className="text-xs text-slate-600 truncate">
-                      To: <span className="font-mono text-slate-800">{primaryNotification.recipient === "none" ? "No email on file" : primaryNotification.recipient}</span>
+                      To: <span className="font-mono text-slate-800">{primaryNotification.recipient === "none" ? "No trusted email on file" : primaryNotification.recipient}</span>
                     </div>
                     {primaryNotification.subject ? (
                       <div className="text-xs text-slate-500 truncate" title={primaryNotification.subject}>
@@ -308,7 +308,7 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                       {event.notifications.map((n) => (
                         <TableRow key={n.notification_id} className="border-slate-100">
                           <TableCell className="font-medium text-slate-700 capitalize">{n.channel}</TableCell>
-                          <TableCell className="font-mono text-xs text-slate-700">{n.recipient === "none" ? "No email on file" : n.recipient}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-700">{n.recipient === "none" ? "No trusted email on file" : n.recipient}</TableCell>
                           <TableCell className="text-xs text-slate-900 font-medium">{n.subject ?? "—"}</TableCell>
                           <TableCell>
                             <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${

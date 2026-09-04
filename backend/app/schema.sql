@@ -103,6 +103,11 @@ CREATE TABLE IF NOT EXISTS recovery_attempts (
     recovery_attempt_id TEXT PRIMARY KEY,
     event_id            TEXT NOT NULL,
     merchant_id         TEXT NOT NULL,
+    -- Owner of this attempt (copied from events.customer_id at execution
+    -- time so the payment → customer → event → attempt → link → notification
+    -- chain stays auditable without joins). Nullable for rows written before
+    -- this column existed.
+    customer_id          TEXT,
     attempt_number      INTEGER NOT NULL,
     action               TEXT NOT NULL,
     execution_mechanism TEXT NOT NULL,
@@ -159,11 +164,18 @@ CREATE TABLE IF NOT EXISTS notifications (
     merchant_id          TEXT NOT NULL,
     event_id             TEXT NOT NULL,
     recovery_attempt_id  TEXT NOT NULL,
+    -- Resolution owner (Reviveo customer id the recipient was taken from).
+    -- Nullable for rows written before this column existed.
+    customer_id          TEXT,
     channel              TEXT NOT NULL DEFAULT 'email', -- email|sms
     recipient            TEXT NOT NULL,
     subject              TEXT,
     body                 TEXT NOT NULL,
     status               TEXT NOT NULL DEFAULT 'sent', -- sent|simulated|failed|skipped
+    -- Which provider path produced this row: 'resend' (live Resend API,
+    -- including failed attempts) or 'simulated' (synthetic/disabled mode).
+    -- NULL for skipped rows, which never reached a provider.
+    provider             TEXT,
     provider_message_id  TEXT,
     created_at           TEXT NOT NULL,
     sent_at              TEXT,

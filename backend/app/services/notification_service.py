@@ -159,11 +159,13 @@ def send_customer_notification(
             "merchant_id": merchant_id,
             "event_id": event_id,
             "recovery_attempt_id": attempt_id,
+            "customer_id": event.get("customer_id") or (customer or {}).get("id"),
             "channel": "email",
             "recipient": "none",
             "subject": None,
             "body": "",
             "status": "skipped",
+            "provider": None,
             "provider_message_id": None,
             "error": error_msg,
             "ai_generated": False,
@@ -218,13 +220,15 @@ def send_customer_notification(
     # 4. Email sending execution (Live Resend vs Simulated)
     notification_id = f"notif_{uuid.uuid4().hex[:16]}"
     status = "simulated"
+    provider: Optional[str] = None
     provider_message_id = None
     error_detail = None
     sent_at = None
 
     if settings.is_live and settings.notification_email_enabled and settings.notification_email_configured:
-        provider = ResendEmailProvider(settings.resend_api_key)
-        ok, resend_id, err = provider.send_email(
+        provider = "resend"
+        provider_obj = ResendEmailProvider(settings.resend_api_key)
+        ok, resend_id, err = provider_obj.send_email(
             to=recipient,
             subject=subject,
             text_body=body,
@@ -244,6 +248,7 @@ def send_customer_notification(
                 "provider": "resend", "error": (err or "")[:300]}})
     else:
         status = "simulated"
+        provider = "simulated"
         provider_message_id = f"sim_msg_{uuid.uuid4().hex[:12]}"
         sent_at = datetime.now(timezone.utc).isoformat()
 
@@ -253,11 +258,13 @@ def send_customer_notification(
         "merchant_id": merchant_id,
         "event_id": event_id,
         "recovery_attempt_id": attempt_id,
+        "customer_id": event.get("customer_id") or (customer or {}).get("id"),
         "channel": "email",
         "recipient": recipient,
         "subject": subject,
         "body": body,
         "status": status,
+        "provider": provider,
         "provider_message_id": provider_message_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "sent_at": sent_at,

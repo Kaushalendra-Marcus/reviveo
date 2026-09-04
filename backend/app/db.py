@@ -86,6 +86,19 @@ def _migrate_existing_dbs() -> None:
     execute("CREATE INDEX IF NOT EXISTS idx_customers_email ON customers (merchant_id, email)")
     execute("CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (merchant_id, phone)")
     execute("CREATE INDEX IF NOT EXISTS idx_customers_rzp ON customers (merchant_id, razorpay_customer_id)")
+    # Identity-chain columns (§8/§10/§16): nullable ADD COLUMNs never touch
+    # existing rows; indexes are created here (never in schema.sql) so the
+    # startup executescript cannot fail on pre-existing tables.
+    attempt_cols = {r["name"] for r in _connect().execute("PRAGMA table_info(recovery_attempts)").fetchall()}
+    if "customer_id" not in attempt_cols:
+        execute("ALTER TABLE recovery_attempts ADD COLUMN customer_id TEXT")
+    execute("CREATE INDEX IF NOT EXISTS idx_attempts_customer ON recovery_attempts (merchant_id, customer_id)")
+    notif_cols = {r["name"] for r in _connect().execute("PRAGMA table_info(notifications)").fetchall()}
+    if "customer_id" not in notif_cols:
+        execute("ALTER TABLE notifications ADD COLUMN customer_id TEXT")
+    if "provider" not in notif_cols:
+        execute("ALTER TABLE notifications ADD COLUMN provider TEXT")
+    execute("CREATE INDEX IF NOT EXISTS idx_notifications_customer ON notifications (merchant_id, customer_id)")
 
 
 # ── merchants ────────────────────────────────────────────────────────────────
@@ -318,16 +331,21 @@ def resolve_webhook_customer(
     razorpay_customer_id: Any = None,
     name: Any = None,
     extra_contacts: Iterable[tuple[str, Any, Any]] = (),
+    linked_customer_id: Optional[str] = None,
 ) -> Optional[dict]:
     """Idempotent webhook customer correlation with trusted-email priority.
 
     `extra_contacts` carries higher-trust contact from payload objects that
     outrank the raw payment-entity contact: an iterable of
     `(source, email, phone)` where source is e.g. `"payment_link"`,
-    `"order"`, or `"notes"`. Callers must pass merchant_id from server-side
-    context, never from the request body.
+    `"order"`, or `"notes"`. `linked_customer_id` pins CASE B (a failed
+    recovery payment whose notes carry Reviveo's own recovery_attempt_id /
+    event_id): the already-known recovery customer wins outright — no new
+    customer is created just because the entity email differs. Callers must
+    pass merchant_id from server-side context, never from the request body.
 
     Resolution order (a placeholder email never overrides a real one):
+      0. pinned linked customer (CASE B recovery correlation)
       1. existing customer with a trusted email (extras first, then entity)
       2. existing customer matched by phone (extras, then entity)
       3. stored Razorpay customer-id mapping
@@ -357,7 +375,7 @@ def resolve_webhook_customer(
         logger.info("placeholder email rejected", extra={"context": {
             "merchant_id": merchant_id,
             "recipient_domain": _domain_of(entity_email_raw),
-            "source": "payment_entity"}})
+            "email_source": "placeholder_rejected"}})
 
     def _matched(row: Optional[dict], source: str) -> Optional[dict]:
         if row is None:
@@ -373,16 +391,22 @@ def resolve_webhook_customer(
             "recipient_domain": _domain_of(row.get("email"))}})
         return row
 
+    # 0 — CASE B pin: notes-referenced recovery customer (merchant-scoped).
+    if linked_customer_id:
+        pinned = get_customer(merchant_id, linked_customer_id)
+        if pinned is not None:
+            return _matched(pinned, "recovery_attempt")
+
     # 1 — existing customer with a trusted email (extras outrank entity).
     for src, t_email, _ in extras:
         if t_email:
             row = _matched(get_customer_by_email(merchant_id, t_email),
-                           f"existing_customer:{src}")
+                           "existing_customer_email")
             if row:
                 return row
     if entity_trusted:
         row = _matched(get_customer_by_email(merchant_id, entity_trusted),
-                       "existing_customer:payment_entity")
+                       "existing_customer_email")
         if row:
             return row
 
@@ -390,34 +414,35 @@ def resolve_webhook_customer(
     for src, _, t_phone in extras:
         if t_phone:
             row = _matched(get_customer_by_phone(merchant_id, t_phone),
-                           f"existing_customer:phone:{src}")
+                           "existing_customer_phone")
             if row:
                 return row
     if entity_phone:
         row = _matched(get_customer_by_phone(merchant_id, entity_phone),
-                       "existing_customer:phone:payment_entity")
+                       "existing_customer_phone")
         if row:
             return row
 
     # 3 — stored Razorpay customer-id mapping.
     if rzp_id:
         row = _matched(get_customer_by_razorpay_id(merchant_id, rzp_id),
-                       "existing_customer:razorpay_customer_id")
+                       "razorpay_customer")
         if row:
             return row
 
     # 4/5 — minimal record from REAL data only (trusted extras first).
     create_email = next((e for _, e, _ in extras if e), None) or entity_trusted
+    create_source = next((s for s, e, _ in extras if e), None) or "payment_entity"
     create_phone = entity_phone or next((p for _, _, p in extras if p), None)
     if create_email or create_phone:
         if create_email:
             row = get_customer_by_email(merchant_id, create_email)
             if row:
-                return _matched(row, "existing_customer:trusted_email")
+                return _matched(row, "existing_customer_email")
         if create_phone:
             row = get_customer_by_phone(merchant_id, create_phone)
             if row:
-                return _matched(row, "existing_customer:phone")
+                return _matched(row, "existing_customer_phone")
         display_name = (name.strip() if isinstance(name, str) and name.strip()
                         else create_email or create_phone or rzp_id)
         customer_id = f"cust_{uuid.uuid4().hex[:12]}"
@@ -440,13 +465,13 @@ def resolve_webhook_customer(
             if row:
                 logger.info("customer created", extra={"context": {
                     "merchant_id": merchant_id, "customer_id": row["id"],
-                    "email_source": "webhook_trusted_contact",
+                    "email_source": create_source,
                     "recipient_domain": _domain_of(row.get("email"))}})
                 return row
 
     # 6 — genuinely no usable contact: no customer, no email, no send.
     logger.info("customer resolution found no usable contact", extra={"context": {
-        "merchant_id": merchant_id}})
+        "merchant_id": merchant_id, "email_source": "none"}})
     return None
 
 
@@ -597,12 +622,12 @@ def count_attempts(event_id: str) -> int:
 def insert_recovery_attempt(a: dict) -> None:
     execute(
         """INSERT INTO recovery_attempts
-           (recovery_attempt_id, event_id, merchant_id, attempt_number, action,
+           (recovery_attempt_id, event_id, merchant_id, customer_id, attempt_number, action,
             execution_mechanism, amount_paise, status, execution_mode, razorpay_ref,
             reference_id, notes_json, scheduled_for, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (a["recovery_attempt_id"], a["event_id"], a["merchant_id"],
-         a["attempt_number"], a["action"], a["execution_mechanism"],
+         a.get("customer_id"), a["attempt_number"], a["action"], a["execution_mechanism"],
          a["amount_paise"], a.get("status", "pending"),
          a.get("execution_mode", "dry_run"), a.get("razorpay_ref"),
          a.get("reference_id"), json.dumps(a.get("notes", {})),
@@ -726,13 +751,16 @@ def insert_notification(n: dict) -> bool:
         execute(
             """INSERT INTO notifications
                (notification_id, merchant_id, event_id, recovery_attempt_id,
-                channel, recipient, subject, body, status, provider_message_id,
-                created_at, sent_at, error, ai_generated, ai_model, ai_latency_ms)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                customer_id, channel, recipient, subject, body, status, provider,
+                provider_message_id, created_at, sent_at, error, ai_generated,
+                ai_model, ai_latency_ms)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (n["notification_id"], n["merchant_id"], n["event_id"],
-             n["recovery_attempt_id"], n.get("channel", "email"), n["recipient"],
+             n["recovery_attempt_id"], n.get("customer_id"),
+             n.get("channel", "email"), n["recipient"],
              n.get("subject"), n["body"], n.get("status", "sent"),
-             n.get("provider_message_id"), n.get("created_at") or now_iso(),
+             n.get("provider"), n.get("provider_message_id"),
+             n.get("created_at") or now_iso(),
              n.get("sent_at"), n.get("error"), int(n.get("ai_generated", 0)),
              n.get("ai_model"), n.get("ai_latency_ms")),
         )

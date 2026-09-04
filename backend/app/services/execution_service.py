@@ -110,6 +110,9 @@ def execute_action(
         "recovery_attempt_id": recovery_attempt_id,
         "event_id": event_id,
         "merchant_id": merchant_id,
+        # Identity chain (§8): the attempt belongs to the event's customer,
+        # so payment → customer → event → attempt → link stays joined.
+        "customer_id": event.get("customer_id") or (customer or {}).get("id"),
         "attempt_number": attempt_number,
         "action": action.value,
         "execution_mechanism": mechanism.value,

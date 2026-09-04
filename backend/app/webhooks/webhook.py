@@ -113,6 +113,30 @@ def _find_customer_by_contact(merchant_id: str, email: Optional[str], phone: Opt
     return None
 
 
+def _linked_recovery_customer(merchant_id: str, notes: dict) -> Optional[str]:
+    """CASE B correlation: return the Reviveo customer id when `notes` carry
+    our own link correlation keys, else None. The referenced attempt/event
+    must exist AND belong to this merchant — anything else is ignored, so a
+    forged or stale reference can never hijack another customer's identity.
+    """
+    if not isinstance(notes, dict):
+        return None
+    attempt_id = notes.get("recovery_attempt_id")
+    if isinstance(attempt_id, str) and attempt_id:
+        attempt = db.get_recovery_attempt(attempt_id)
+        if attempt is not None and attempt.get("merchant_id") == merchant_id:
+            event = db.get_event(attempt["event_id"])
+            if event is not None and event.get("customer_id"):
+                return event["customer_id"]
+    event_id = notes.get("event_id")
+    if isinstance(event_id, str) and event_id:
+        event = db.get_event(event_id)
+        if (event is not None and event.get("merchant_id") == merchant_id
+                and event.get("customer_id")):
+            return event["customer_id"]
+    return None
+
+
 def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
     # Support both real Razorpay envelope (payload.payload.payment.entity)
     # and flat synthetic payloads used by tests / `curl` demos.
@@ -173,6 +197,11 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
             ("notes",
              notes.get("email"), notes.get("contact") or notes.get("phone")),
         ]
+        # CASE B — failed recovery payment: entity.notes inherits Reviveo's
+        # own link notes (event_id / recovery_attempt_id / source=reviveo).
+        # When they point at a real attempt/event, that recovery customer is
+        # authoritative — never mint a new customer from the entity contact.
+        linked_customer_id = _linked_recovery_customer(merchant_id, notes)
         customer = db.resolve_webhook_customer(
             merchant_id,
             email=(entity.get("email")),
@@ -180,6 +209,7 @@ def _handle_payment_failed(merchant_id: str, payload: dict) -> None:
             razorpay_customer_id=entity.get("customer_id"),
             name=entity.get("name") or notes.get("name"),
             extra_contacts=extra_contacts,
+            linked_customer_id=linked_customer_id,
         )
 
     event = {

@@ -63,6 +63,7 @@ class RecoveryAttemptOut(BaseModel):
     amount_paise: int
     status: str
     execution_mode: str
+    customer_id: Optional[str] = None
     razorpay_ref: Optional[str] = None
     short_url: Optional[str] = None
     reference_id: Optional[str] = None
@@ -94,11 +95,13 @@ class NotificationOut(BaseModel):
     merchant_id: str
     event_id: str
     recovery_attempt_id: str
+    customer_id: Optional[str] = None
     channel: str
     recipient: str
     subject: Optional[str] = None
     body: str
     status: str
+    provider: Optional[str] = None
     provider_message_id: Optional[str] = None
     created_at: str
     sent_at: Optional[str] = None
