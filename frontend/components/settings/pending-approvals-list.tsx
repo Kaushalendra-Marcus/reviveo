@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Bot, CheckCircle2, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, ExternalLink, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,18 +24,32 @@ import type { PendingApproval } from "@/lib/types";
 export function PendingApprovalsList() {
   const { data: approvals, isLoading } = usePendingApprovals();
   const [confirmTarget, setConfirmTarget] = useState<{ approval: PendingApproval; action: "approve" | "deny" } | null>(null);
+  const [resultLink, setResultLink] = useState<string | null>(null);
 
   const approve = useApproveApproval();
   const deny = useDenyApproval();
+
+  function closeDialog() {
+    setConfirmTarget(null);
+    setResultLink(null);
+  }
 
   function handleConfirm() {
     if (!confirmTarget) return;
     const { approval, action } = confirmTarget;
     const mutation = action === "approve" ? approve : deny;
     mutation.mutate(approval.id, {
-      onSuccess: () => {
-        toast.success(action === "approve" ? "Action approved and executed" : "Action denied");
-        setConfirmTarget(null);
+      onSuccess: (data) => {
+        if (action === "approve" && data.short_url) {
+          // Keep the dialog open one more beat so the merchant can actually
+          // click through to the payment link — closing immediately (the old
+          // behavior) meant the link Reviveo just created was never shown
+          // anywhere in the dashboard.
+          setResultLink(data.short_url);
+        } else {
+          toast.success(action === "approve" ? "Action approved and executed" : "Action denied");
+          closeDialog();
+        }
       },
       onError: (err: unknown) => {
         toast.error("Something went wrong", {
@@ -113,39 +127,65 @@ export function PendingApprovalsList() {
         ))}
       </div>
 
-      <Dialog open={Boolean(confirmTarget)} onOpenChange={(open) => !open && setConfirmTarget(null)}>
+      <Dialog open={Boolean(confirmTarget)} onOpenChange={(open) => !open && closeDialog()}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {confirmTarget?.action === "approve" ? "Approve this action?" : "Deny this action?"}
-            </DialogTitle>
-            <DialogDescription>
-              {confirmTarget?.action === "approve" ? (
-                <>
-                  This will execute <strong>{confirmTarget && ACTION_LABELS[confirmTarget.approval.proposed_action]}</strong> for{" "}
-                  <strong>{confirmTarget && formatINR(confirmTarget.approval.amount_paise)}</strong> right away.
-                </>
-              ) : (
-                "This event will be closed without this action running. This cannot be undone."
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant={confirmTarget?.action === "deny" ? "destructive" : "default"}
-              onClick={handleConfirm}
-              disabled={approve.isPending || deny.isPending}
-            >
-              {approve.isPending || deny.isPending
-                ? "Working…"
-                : confirmTarget?.action === "approve"
-                  ? "Approve & Execute"
-                  : "Deny"}
-            </Button>
-          </DialogFooter>
+          {resultLink ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>Recovery link created</DialogTitle>
+                <DialogDescription>
+                  Reviveo created a real Razorpay payment link for this recovery. Open it to complete
+                  (or test) the payment — the event updates automatically once Razorpay confirms the outcome.
+                </DialogDescription>
+              </DialogHeader>
+              <a
+                href={resultLink}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800 hover:bg-emerald-100"
+              >
+                <span className="truncate">{resultLink}</span>
+                <ExternalLink className="size-4 shrink-0" />
+              </a>
+              <DialogFooter>
+                <Button onClick={closeDialog}>Done</Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>
+                  {confirmTarget?.action === "approve" ? "Approve this action?" : "Deny this action?"}
+                </DialogTitle>
+                <DialogDescription>
+                  {confirmTarget?.action === "approve" ? (
+                    <>
+                      This will execute <strong>{confirmTarget && ACTION_LABELS[confirmTarget.approval.proposed_action]}</strong> for{" "}
+                      <strong>{confirmTarget && formatINR(confirmTarget.approval.amount_paise)}</strong> right away.
+                    </>
+                  ) : (
+                    "This event will be closed without this action running. This cannot be undone."
+                  )}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button variant="outline" onClick={closeDialog}>
+                  Cancel
+                </Button>
+                <Button
+                  variant={confirmTarget?.action === "deny" ? "destructive" : "default"}
+                  onClick={handleConfirm}
+                  disabled={approve.isPending || deny.isPending}
+                >
+                  {approve.isPending || deny.isPending
+                    ? "Working…"
+                    : confirmTarget?.action === "approve"
+                      ? "Approve & Execute"
+                      : "Deny"}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </>

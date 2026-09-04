@@ -100,6 +100,7 @@ export interface RecoveryAttemptOut {
   status: RecoveryAttemptStatus;
   execution_mode: ExecutionMode;
   razorpay_ref: string | null;
+  short_url: string | null;
   reference_id: string | null;
   scheduled_for: string | null;
   created_at: string;
@@ -310,6 +311,7 @@ export interface ApprovalActionResult {
   status: string;
   event_id: string;
   recovery_attempt_id: string | null;
+  short_url: string | null;
   ok: boolean;
 }
 

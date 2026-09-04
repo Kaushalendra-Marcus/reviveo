@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowLeft, Copy } from "lucide-react";
+import { ArrowLeft, Copy, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -128,6 +128,7 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                         <TableHead>Status</TableHead>
                         <TableHead>Mode</TableHead>
                         <TableHead>Reference</TableHead>
+                        <TableHead>Link</TableHead>
                         <TableHead>Created</TableHead>
                         <TableHead>Resolved</TableHead>
                       </TableRow>
@@ -143,6 +144,20 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                           <TableCell className="text-slate-500">{a.execution_mode === "dry_run" ? "Dry Run" : "Live"}</TableCell>
                           <TableCell className="font-mono text-xs text-slate-500">
                             {a.reference_id ?? a.razorpay_ref ?? "—"}
+                          </TableCell>
+                          <TableCell>
+                            {a.short_url ? (
+                              <a
+                                href={a.short_url}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                                className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:underline"
+                              >
+                                Open <ExternalLink className="size-3" />
+                              </a>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            )}
                           </TableCell>
                           <TableCell className="text-xs text-slate-500">{formatDateTime(a.created_at)}</TableCell>
                           <TableCell className="text-xs text-slate-500">{a.resolved_at ? formatDateTime(a.resolved_at) : "—"}</TableCell>
