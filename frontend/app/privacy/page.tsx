@@ -73,10 +73,10 @@ export default function PrivacyPolicyPage() {
               <p className="mt-2">
                 Questions about this build can be sent to{" "}
                 <a
-                  href="mailto:hello@reviveo.ai"
+                  href="mailto:yadavkausha4a5@gmail.com"
                   className="text-blue-700 underline underline-offset-4"
                 >
-                  hello@reviveo.ai
+                  yadavkausha4a5@gmail.com
                 </a>
                 .
               </p>
