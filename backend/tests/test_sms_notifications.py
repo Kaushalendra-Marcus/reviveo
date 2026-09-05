@@ -317,3 +317,45 @@ def test_retry_redispatches_sms(seeded_db, monkeypatch):
         # Both channels delivered (simulated); retry must refuse duplicates.
         r = c.post(f"/api/events/{eid}/notifications/retry", headers=H)
         assert r.status_code == 409
+
+
+# ── Audit trail carries the message + AI proof (both channels) ──────────────
+def test_notification_audit_rows(seeded_db, monkeypatch):
+    _enable_sms(monkeypatch)
+    db.insert_customer(_customer(cid="cust_audit"))
+    eid = f"evt_audit_{uuid.uuid4().hex[:8]}"
+    db.insert_event(_event(eid, "cust_audit"))
+    execution_service.execute_action(
+        merchant_id=MERCHANT, event=db.get_event(eid),
+        action=Action.retry_and_notify,
+        mechanism=ExecutionMechanism.new_recovery_payment,
+        customer=db.get_customer(MERCHANT, "cust_audit"))
+    rows = db.list_audit_for_event(eid)
+    by_channel = {}
+    for r in rows:
+        ch = (r["payload"] or {}).get("channel")
+        if ch in ("email", "sms"):
+            by_channel[ch] = r
+    assert set(by_channel) == {"email", "sms"}
+    for ch, r in by_channel.items():
+        assert r["stage"] == "executed"
+        assert (r["payload"] or {}).get("body")  # exact message text
+        assert (r["payload"] or {}).get("notification_id")
+        assert (r["payload"] or {}).get("status") == "simulated"
+    # AI-vs-fallback proof is on the row itself.
+    assert all("ai_used" in r and "fallback_triggered" in r for r in by_channel.values())
+
+
+def test_skipped_notification_audited(seeded_db, monkeypatch):
+    _enable_sms(monkeypatch)
+    db.insert_customer(_customer(cid="cust_audskip", phone=None, email=None))
+    eid = f"evt_audskip_{uuid.uuid4().hex[:8]}"
+    db.insert_event(_event(eid, "cust_audskip"))
+    execution_service.execute_action(
+        merchant_id=MERCHANT, event=db.get_event(eid),
+        action=Action.retry_and_notify,
+        mechanism=ExecutionMechanism.new_recovery_payment,
+        customer=db.get_customer(MERCHANT, "cust_audskip"))
+    skipped = [r for r in db.list_audit_for_event(eid)
+               if (r["payload"] or {}).get("status") == "skipped"]
+    assert { (r["payload"] or {}).get("channel") for r in skipped } == {"email", "sms"}

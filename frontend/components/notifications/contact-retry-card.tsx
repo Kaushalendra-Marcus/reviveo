@@ -70,11 +70,6 @@ export function ContactRetryCard({
     <Card className="mt-4 rounded-2xl border-amber-200 bg-amber-50/60 shadow-sm">
       <CardHeader className="pb-2">
         <CardTitle className="text-base text-slate-900">Attach contact &amp; retry</CardTitle>
-        <p className="text-xs leading-5 text-slate-600">
-          The failed payment carried no usable contact, so the message was honestly skipped.
-          Enter the customer&apos;s real details (you, the merchant, are the authoritative
-          source) and retry — placeholders are rejected, delivered rows are never re-sent.
-        </p>
       </CardHeader>
       <CardContent>
         <div className="flex flex-col gap-2 sm:flex-row">

@@ -48,6 +48,41 @@ def _phone_suffix(recipient: Optional[str]) -> str:
     return digits[-4:] if len(digits) >= 4 else "unknown"
 
 
+def _audit_notification(*, merchant_id: str, event_id: str, channel: str,
+                        status: str, recipient: Optional[str], subject: Optional[str],
+                        body: Optional[str], notification_id: str,
+                        provider: Optional[str], provider_message_id: Optional[str],
+                        error: Optional[str], ai_used: bool,
+                        ai_model: Optional[str], ai_latency_ms: Optional[int],
+                        fallback_triggered: bool) -> None:
+    """One audit-trail row per dispatch outcome (stage `executed`, fixed
+    vocabulary) so the dashboard timeline shows the exact customer message,
+    which channel carried it, and whether AI or the deterministic fallback
+    wrote it. The AI/fallback proof lives here: ai_used=True means the model
+    drafted this body; fallback_triggered=True means the static template did.
+    """
+    if status == "sent":
+        message = f"{channel.title()} sent via {provider} (id {provider_message_id})"
+    elif status == "simulated":
+        message = f"{channel.title()} simulated — no live send performed"
+    elif status == "failed":
+        message = f"{channel.title()} send failed via {provider}: {(error or '')[:200]}"
+    else:
+        message = f"{channel.title()} skipped — {error or 'no trusted contact'}"
+    db.insert_audit({
+        "event_id": event_id, "merchant_id": merchant_id,
+        "stage": AuditStage.executed.value,
+        "message": message,
+        "payload": {"channel": channel, "notification_id": notification_id,
+                    "recipient": recipient, "subject": subject, "body": body,
+                    "status": status, "provider": provider,
+                    "provider_message_id": provider_message_id},
+        "ai_used": ai_used, "ai_model": ai_model,
+        "ai_latency_ms": ai_latency_ms,
+        "fallback_triggered": fallback_triggered,
+    })
+
+
 @dataclass(frozen=True)
 class NotificationResult:
     notification_id: str
@@ -232,6 +267,14 @@ def send_customer_notification(
             "error": error_msg,
             "ai_generated": False,
         })
+        _audit_notification(
+            merchant_id=merchant_id, event_id=event_id, channel="email",
+            status="skipped", recipient="none", subject=None, body="",
+            notification_id=notification_id, provider=None,
+            provider_message_id=None, error=error_msg,
+            ai_used=False, ai_model=None, ai_latency_ms=None,
+            fallback_triggered=False,
+        )
         logger.info("email notification skipped — no recipient", extra={"context": {"event_id": event_id}})
         return NotificationResult(
             notification_id=notification_id,
@@ -336,6 +379,16 @@ def send_customer_notification(
         "ai_latency_ms": ai_result.latency_ms,
     })
 
+    _audit_notification(
+        merchant_id=merchant_id, event_id=event_id, channel="email",
+        status=status, recipient=recipient, subject=subject, body=body,
+        notification_id=notification_id, provider=provider,
+        provider_message_id=provider_message_id, error=error_detail,
+        ai_used=ai_result.used, ai_model=ai_result.model,
+        ai_latency_ms=ai_result.latency_ms,
+        fallback_triggered=(not ai_result.used),
+    )
+
     logger.info("customer notification processed", extra={"context": {
         "event_id": event_id, "recovery_attempt_id": attempt_id,
         "notification_id": notification_id, "status": status,
@@ -434,6 +487,14 @@ def send_sms_notification(
             "error": error_msg,
             "ai_generated": False,
         })
+        _audit_notification(
+            merchant_id=merchant_id, event_id=event_id, channel="sms",
+            status="skipped", recipient="none", subject=None, body="",
+            notification_id=notification_id, provider=None,
+            provider_message_id=None, error=error_msg,
+            ai_used=False, ai_model=None, ai_latency_ms=None,
+            fallback_triggered=False,
+        )
         logger.info("sms notification skipped — no recipient", extra={"context": {"event_id": event_id}})
         return NotificationResult(
             notification_id=notification_id,
@@ -523,6 +584,16 @@ def send_sms_notification(
         "ai_model": ai_result.model,
         "ai_latency_ms": ai_result.latency_ms,
     })
+
+    _audit_notification(
+        merchant_id=merchant_id, event_id=event_id, channel="sms",
+        status=status, recipient=recipient, subject=None, body=body,
+        notification_id=notification_id, provider=provider,
+        provider_message_id=provider_message_id, error=error_detail,
+        ai_used=ai_result.used, ai_model=ai_result.model,
+        ai_latency_ms=ai_result.latency_ms,
+        fallback_triggered=(not ai_result.used),
+    )
 
     logger.info("customer sms notification processed", extra={"context": {
         "event_id": event_id, "recovery_attempt_id": attempt_id,

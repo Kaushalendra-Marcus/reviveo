@@ -52,10 +52,19 @@ def test_ten_event_batch_produces_uniform_audit_trail():
     for result in results:
         event_id = result["event_id"]
         audit_rows = db.list_audit_for_event(event_id)
-        assert len(audit_rows) == 6, f"{event_id} has {len(audit_rows)} audit rows, expected 6"
-
+        # Six canonical stages always lead; each executed customer
+        # notification (email; SMS is flag-gated off in tests) appends one
+        # extra `executed` audit row carrying the message + AI proof.
         stages = [r["stage"] for r in audit_rows]
-        assert stages == ["detected", "analyzed", "decided", "guardrail", "executed", "outcome"]
+        assert stages[:4] == ["detected", "analyzed", "decided", "guardrail"]
+        assert "executed" in stages[4:] and "outcome" in stages[4:]
+
+        notif_rows = [r for r in audit_rows
+                      if (r["payload"] or {}).get("channel") in ("email", "sms")]
+        for r in notif_rows:
+            assert r["stage"] == "executed"
+            assert (r["payload"] or {}).get("notification_id")
+            assert "body" in (r["payload"] or {})
 
         outcome_rows = [r for r in audit_rows if r["stage"] == "outcome"]
         assert len(outcome_rows) == 1
