@@ -32,6 +32,16 @@ function aiGenLabel(status: string, aiGenerated: boolean): string {
   return aiGenerated ? "AI Generated" : "Fallback";
 }
 
+function noRecipientLabel(channel: string): string {
+  // Backend stores recipient="none" for skipped rows on every channel —
+  // label the missing contact for the channel that actually skipped.
+  return channel === "sms" ? "No trusted phone on file" : "No trusted email on file";
+}
+
+function recipientLabel(channel: string, recipient: string): string {
+  return recipient === "none" ? noRecipientLabel(channel) : recipient;
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
