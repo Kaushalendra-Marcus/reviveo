@@ -11,6 +11,7 @@ import { SiteNav } from "@/components/homepage/site-nav";
 import { ProblemStatement } from "@/components/homepage/problem-statement";
 import { IntegrationCarousel } from "@/components/homepage/integration-carousel";
 import { ProductHighlights } from "@/components/homepage/product-highlights";
+import { DemoVideo } from "@/components/homepage/demo-video";
 
 export default function Home() {
   return (
@@ -32,6 +33,11 @@ export default function Home() {
         <section id="product">
           <RecoveryPipelineDiagram />
         </section>
+
+        {/* DEMO VIDEO — the 5-minute walkthrough, right after the pipeline
+            explanation so a visitor who now understands the concept can
+            immediately see it actually running. */}
+        <DemoVideo />
 
         {/* INTEGRATION ORBITAL — Antimetal-inspired logo carousel */}
         <IntegrationCarousel />

@@ -69,6 +69,9 @@ export const SiteNav = () => {
               <a href="#product" className="block rounded-sm p-2 hover:bg-slate-100">
                 Product
               </a>
+              <a href="#demo" className="block rounded-sm p-2 hover:bg-slate-100">
+                Demo
+              </a>
               <a href="#how-it-works" className="block rounded-sm p-2 hover:bg-slate-100">
                 How It Works
               </a>
@@ -128,6 +131,9 @@ export const SiteNav = () => {
             <nav className="flex items-center gap-8 text-sm font-medium text-slate-600">
               <a href="#product" className="transition-colors hover:text-blue-700">
                 Product
+              </a>
+              <a href="#demo" className="transition-colors hover:text-blue-700">
+                Demo
               </a>
               <a href="#how-it-works" className="transition-colors hover:text-blue-700">
                 How It Works
