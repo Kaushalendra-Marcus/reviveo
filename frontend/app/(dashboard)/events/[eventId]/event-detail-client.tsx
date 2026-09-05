@@ -13,6 +13,7 @@ import { ConfidenceBadge } from "@/components/shared/confidence-badge";
 import { LoadingState, ErrorState, EmptyState } from "@/components/shared/states";
 import { AuditTimeline } from "@/components/audit/audit-timeline";
 import { RawLogPanel } from "@/components/audit/raw-log-panel";
+import { ContactRetryCard } from "@/components/notifications/contact-retry-card";
 import { useAuditTrail, useEventDetail, useRawLog } from "@/hooks/api";
 import {
   ACTION_LABELS,
@@ -230,6 +231,15 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
               </CardContent>
             </Card>
           </div>
+
+          {/* Merchant-authoritative unblocker for skipped/failed notifications */}
+          <ContactRetryCard
+            eventId={event.event_id}
+            customerId={event.customer_id}
+            attempts={event.attempts}
+            notifications={event.notifications ?? []}
+            onDone={() => refetch()}
+          />
 
           {/* Recovery Attempts Details */}
           <Card className="mt-4 rounded-2xl border-slate-200 shadow-sm">

@@ -128,11 +128,13 @@ export interface Notification {
   merchant_id: string;
   event_id: string;
   recovery_attempt_id: string;
+  customer_id?: string | null;
   channel: string;
   recipient: string;
   subject: string | null;
   body: string;
   status: "sent" | "simulated" | "failed" | "skipped";
+  provider?: string | null;
   provider_message_id: string | null;
   created_at: string;
   sent_at: string | null;

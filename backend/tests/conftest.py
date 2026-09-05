@@ -22,6 +22,12 @@ def temp_db(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "database_url", path)
     monkeypatch.setattr(settings, "razorpay_webhook_secret", None)
+    # Pin notification channels off: a developer's local .env may enable
+    # them (e.g. TWILIO_SMS_ENABLED=true), which would add extra channel
+    # rows and break hermetic assertions. Tests that cover a channel turn
+    # its flag on explicitly via monkeypatch.
+    monkeypatch.setattr(settings, "twilio_sms_enabled", False)
+    monkeypatch.setattr(settings, "notification_email_enabled", False)
 
     from app import db
     # Each test may run in the same thread but db._local persists a stale
