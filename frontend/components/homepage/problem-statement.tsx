@@ -28,7 +28,7 @@ export function ProblemStatement() {
           </div>
 
           <h2 className="mt-6 text-4xl font-bold tracking-[-0.045em] text-white sm:text-5xl lg:text-7xl">
-            Why <span className="bg-gradient-to-r from-blue-400 via-indigo-300 to-purple-300 bg-clip-text text-transparent">10-15% of your ARR</span> disappears every year.
+            Why <span className="text-blue-400">10-15% of your ARR</span> disappears every year.
           </h2>
 
           <p className="mt-6 text-lg leading-8 text-slate-300 sm:text-xl">
@@ -105,9 +105,9 @@ export function ProblemStatement() {
             </div>
 
             {/* Cause 2 */}
-            <div className="group relative rounded-3xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-sm transition hover:border-indigo-400/40 hover:bg-white/[0.05]">
+            <div className="group relative rounded-3xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-sm transition hover:border-blue-400/40 hover:bg-white/[0.05]">
               <div className="flex items-center justify-between">
-                <div className="flex size-10 items-center justify-center rounded-xl bg-indigo-500/15 text-indigo-400">
+                <div className="flex size-10 items-center justify-center rounded-xl bg-blue-500/15 text-blue-400">
                   <Clock className="size-5" />
                 </div>
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-200">
@@ -118,16 +118,16 @@ export function ProblemStatement() {
               <p className="mt-2 text-xs leading-5 text-slate-300">
                 Recurring charge hit 24-48 hours before payday. Retrying immediately irritates customers.
               </p>
-              <div className="mt-6 flex items-center gap-2 rounded-xl border border-indigo-400/20 bg-indigo-500/10 p-3 text-xs font-medium text-indigo-300">
-                <Zap className="size-3.5 shrink-0 text-indigo-400" />
+              <div className="mt-6 flex items-center gap-2 rounded-xl border border-blue-400/20 bg-blue-500/10 p-3 text-xs font-medium text-blue-300">
+                <Zap className="size-3.5 shrink-0 text-blue-400" />
                 <span>Fix: Smart Retry 24h window.</span>
               </div>
             </div>
 
             {/* Cause 3 */}
-            <div className="group relative rounded-3xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-sm transition hover:border-purple-400/40 hover:bg-white/[0.05]">
+            <div className="group relative rounded-3xl border border-white/10 bg-white/[0.03] p-6 backdrop-blur-sm transition hover:border-blue-400/40 hover:bg-white/[0.05]">
               <div className="flex items-center justify-between">
-                <div className="flex size-10 items-center justify-center rounded-xl bg-purple-500/15 text-purple-400">
+                <div className="flex size-10 items-center justify-center rounded-xl bg-blue-500/15 text-blue-400">
                   <RefreshCw className="size-5" />
                 </div>
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-200">
@@ -138,8 +138,8 @@ export function ProblemStatement() {
               <p className="mt-2 text-xs leading-5 text-slate-300">
                 Temporary bank network outage or gateway connection drop during recurring debit.
               </p>
-              <div className="mt-6 flex items-center gap-2 rounded-xl border border-purple-400/20 bg-purple-500/10 p-3 text-xs font-medium text-purple-300">
-                <Zap className="size-3.5 shrink-0 text-purple-400" />
+              <div className="mt-6 flex items-center gap-2 rounded-xl border border-blue-400/20 bg-blue-500/10 p-3 text-xs font-medium text-blue-300">
+                <Zap className="size-3.5 shrink-0 text-blue-400" />
                 <span>Fix: Cooldown check + retry.</span>
               </div>
             </div>
