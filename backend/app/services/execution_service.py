@@ -149,6 +149,18 @@ def execute_action(
                     customer=customer,
                     short_url=short_url,
                 )
+                # SMS is an opt-in second channel on the same attempt: same
+                # contact action, same AI message, independent idempotency
+                # row (channel='sms'). Gated by TWILIO_SMS_ENABLED so the
+                # default pipeline is byte-for-byte unchanged when off.
+                if settings.twilio_sms_enabled:
+                    notification_service.send_sms_notification(
+                        merchant_id=merchant_id,
+                        event=event,
+                        recovery_attempt=attempt_record,
+                        customer=customer,
+                        short_url=short_url,
+                    )
 
     logger.info("action executed", extra={"context": {
         "event_id": event_id, "recovery_attempt_id": recovery_attempt_id,

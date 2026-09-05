@@ -298,6 +298,7 @@ def retry_event_notification(event_id: str) -> schemas.NotificationOut:
     current stored contact — the path to deliver after attaching a real
     email via PUT /customers/{id}. Delivered rows (sent/simulated) return
     409: idempotency is never bypassed, nothing is ever double-sent.
+    The opt-in SMS channel follows the same per-channel rules when enabled.
     """
     from ..services import notification_service
 
@@ -334,6 +335,21 @@ def retry_event_notification(event_id: str) -> schemas.NotificationOut:
         customer=customer,
         short_url=attempt.get("short_url"),
     )
+    # Same retry semantics for the opt-in SMS channel: a missing row is
+    # dispatched fresh; only a non-delivered (skipped/failed) row is
+    # replaced; delivered rows are untouched.
+    if settings.twilio_sms_enabled:
+        sms_existing = db.get_notification_by_attempt(
+            attempt["recovery_attempt_id"], channel="sms")
+        if sms_existing is None or sms_existing.get("status") not in ("sent", "simulated"):
+            if sms_existing is not None:
+                db.delete_notification(attempt["recovery_attempt_id"], channel="sms")
+            notification_service.send_sms_notification(
+                merchant_id=merchant_id, event=event,
+                recovery_attempt=db.get_recovery_attempt(attempt["recovery_attempt_id"]),
+                customer=customer,
+                short_url=attempt.get("short_url"),
+            )
     row = db.get_notification_by_attempt(attempt["recovery_attempt_id"])
     assert row is not None
     return schemas.NotificationOut(**{**row, "ai_generated": bool(row["ai_generated"])})

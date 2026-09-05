@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     notification_from_email: str = "onboarding@resend.dev"
 
+    # ── Twilio SMS (optional channel; off by default) ─────────────────────
+    # The SMS channel only fires when explicitly enabled AND fully
+    # configured AND live. Secrets are never hard-coded — set these in
+    # the environment (Render dashboard for production).
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
+    twilio_sms_enabled: bool = False
+
     frontend_origin: str = "http://localhost:3000"
 
     # Runtime / financial guardrails (doc §3.10) — module-level constants that
@@ -71,6 +80,11 @@ class Settings(BaseSettings):
     @property
     def notification_email_configured(self) -> bool:
         return bool(self.resend_api_key)
+
+    @property
+    def twilio_sms_configured(self) -> bool:
+        return bool(self.twilio_account_sid and self.twilio_auth_token
+                    and self.twilio_phone_number)
 
 
 @lru_cache

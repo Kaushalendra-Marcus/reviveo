@@ -297,6 +297,45 @@ def trusted_email(value: Any) -> Optional[str]:
     return clean
 
 
+# Razorpay test-mode placeholder phone numbers CONFIRMED from live
+# payment.failed payloads (dummy `contact` values Razorpay substitutes when
+# the checkout never captured a real number). Never a real subscriber — must
+# never become an SMS recipient. Exactly-confirmed values only, plus the
+# all-identical-digit pattern (no numbering plan allocates 7–15 repeated
+# digits to a real subscriber), which can never be a reachable customer.
+PLACEHOLDER_PHONES = frozenset({"917830328929", "+917830328929",
+                                "916349562698", "+916349562698"})
+
+
+def is_placeholder_phone(value: Any) -> bool:
+    """True for known test/dummy phone identities: confirmed Razorpay dummy
+    numbers, or numbers whose national part is one repeated digit
+    (e.g. +911111111111, +910000000000 — no numbering plan allocates those
+    to a reachable subscriber)."""
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    digits = re.sub(r"\D", "", stripped)
+    if not digits:
+        return False
+    if stripped in PLACEHOLDER_PHONES or digits in PLACEHOLDER_PHONES:
+        return True
+    candidates = [digits]
+    if len(digits) >= 9:
+        candidates += [digits[1:], digits[2:]]  # tolerate 1–2 digit CC prefix
+    return any(len(c) >= 7 and len(set(c)) == 1 for c in candidates)
+
+
+def trusted_phone(value: Any) -> Optional[str]:
+    """A normalized phone safe to store and message: valid format AND NOT a
+    known placeholder. Returns None otherwise — callers must treat None as
+    'no usable phone', never fall back to the raw value."""
+    clean = normalize_phone(value)
+    if clean is None or is_placeholder_phone(clean):
+        return None
+    return clean
+
+
 def normalize_email(value: Any) -> Optional[str]:
     """Lowercased/stripped email, or None when it is not a plausible address.
     Never invents data — garbage in yields None, never a placeholder."""
