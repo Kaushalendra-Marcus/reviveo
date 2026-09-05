@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from .. import db
 from ..config import settings
 from ..deps import require_api_key
-from ..enums import EventStatus
+from ..enums import EventStatus, TERMINAL_STATUSES
 from . import schemas
 
 router = APIRouter(prefix="/api", tags=["api"], dependencies=[Depends(require_api_key)])
