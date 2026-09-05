@@ -72,7 +72,7 @@ export const Footer = () => {
 
             <div className="mt-6">
               <p className="text-sm font-semibold uppercase tracking-widest text-slate-300 sm:text-base sm:normal-case sm:tracking-normal sm:font-medium">
-                Sign up for our newsletter
+                Sign up for our business calls
               </p>
 
               <form

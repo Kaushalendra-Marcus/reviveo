@@ -96,7 +96,7 @@ export const Hero = () => {
         >
           Recover revenue
           <br />
-          <span className="bg-gradient-to-r from-blue-400 via-indigo-300 to-purple-300 bg-clip-text text-transparent">
+          <span className="text-blue-400">
             before it disappears.
           </span>
         </TimelineAnimation>
