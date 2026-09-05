@@ -3,7 +3,8 @@ import { cn } from '@/lib/utils';
 import { Menu, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type React from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 export type SideMenuDirection = 'left' | 'right';
 export type ButtonOpeningVariants = 'push' | 'merge' | 'stay';
@@ -131,6 +132,16 @@ const MotionDrawer: React.FC<SideMenuProps> = ({
 }) => {
   const [internalIsOpen, setInternalIsOpen] = useState<boolean>(false);
 
+  // A `fixed` element positions itself relative to the nearest ancestor with
+  // a `transform` (or filter/perspective) set, not the viewport, per the CSS
+  // spec — so if this drawer ever renders inside a `transform`-using
+  // ancestor (e.g. a nav bar using transform-gpu to stop scroll flicker),
+  // "fixed full-screen" silently shrinks to that ancestor's own box instead
+  // of covering the screen. Portaling straight to <body> sidesteps that
+  // entirely, regardless of where this component is mounted.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : internalIsOpen;
   const setIsOpen = (value: boolean) => {
     if (controlledIsOpen === undefined) {
@@ -189,84 +200,87 @@ const MotionDrawer: React.FC<SideMenuProps> = ({
   const drawerPositionClasses = direction === 'left' ? 'left-0' : 'right-0';
   const openButtonPositionClasses = direction === 'left' ? 'top-4 left-4' : 'top-4 right-4';
 
-  return (
-    <>
-      {showToggleButton && (
-        <motion.button
-          className={cn(
-            `fixed z-[99] text-primary cursor-pointer ${openButtonPositionClasses}`,
-            isOpen && 'pointer-events-none',
-            btnClassName
-          )}
-          onClick={() => setIsOpen(true)}
-          variants={buttonVariants}
-          animate={isOpen ? 'open' : 'closed'}
-          transition={animationConfig}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <Menu />
-        </motion.button>
-      )}
-
-      <AnimatePresence>
-        {isOpen && (
-          <div className={`fixed w-full h-full top-0 left-0 z-[9999] ${className}`}>
-            {/* Overlay */}
-            <motion.div
-              className={`absolute w-full h-full top-0 left-0 ${overlayClassName}`}
-              style={{ backgroundColor: overlayColor }}
-              onClick={() => setIsOpen(false)}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.3 }}
-            />
-
-            {/* Drawer */}
-            <motion.div
-              className={`absolute h-full shadow-[8px_1px_21px_0px_rgba(17,17,26,0.1)] ${drawerPositionClasses} ${contentClassName}`}
-              style={{
-                backgroundColor,
-                width: `${width}px`,
-                padding: '60px 30px 30px 30px',
-                boxSizing: 'border-box',
-              }}
-              drag={enableDrag ? 'x' : false}
-              dragElastic={0.1}
-              dragConstraints={getDragConstraints()}
-              dragMomentum={false}
-              onDragEnd={handleDragEnd}
-              variants={getDrawerVariants()}
-              initial='closed'
-              animate='open'
-              exit='closed'
-              transition={animationConfig}
-            >
-              {/* Close Button */}
-              {showToggleButton && (
-                <motion.button
-                  className={cn(
-                    'absolute top-2 right-8 p-2 text-foreground cursor-pointer',
-                    clsBtnClassName
-                  )}
-                  onClick={() => setIsOpen(false)}
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <X size={20} />
-                </motion.button>
+  return mounted
+    ? createPortal(
+        <>
+          {showToggleButton && (
+            <motion.button
+              className={cn(
+                `fixed z-[99] text-primary cursor-pointer ${openButtonPositionClasses}`,
+                isOpen && 'pointer-events-none',
+                btnClassName
               )}
+              onClick={() => setIsOpen(true)}
+              variants={buttonVariants}
+              animate={isOpen ? 'open' : 'closed'}
+              transition={animationConfig}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              <Menu />
+            </motion.button>
+          )}
 
-              {/* Content */}
-              <div className='h-full overflow-y-auto'>{children}</div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-    </>
-  );
+          <AnimatePresence>
+            {isOpen && (
+              <div className={`fixed w-full h-full top-0 left-0 z-[9999] ${className}`}>
+                {/* Overlay */}
+                <motion.div
+                  className={`absolute w-full h-full top-0 left-0 ${overlayClassName}`}
+                  style={{ backgroundColor: overlayColor }}
+                  onClick={() => setIsOpen(false)}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.3 }}
+                />
+
+                {/* Drawer */}
+                <motion.div
+                  className={`absolute h-full shadow-[8px_1px_21px_0px_rgba(17,17,26,0.1)] ${drawerPositionClasses} ${contentClassName}`}
+                  style={{
+                    backgroundColor,
+                    width: `${width}px`,
+                    padding: '60px 30px 30px 30px',
+                    boxSizing: 'border-box',
+                  }}
+                  drag={enableDrag ? 'x' : false}
+                  dragElastic={0.1}
+                  dragConstraints={getDragConstraints()}
+                  dragMomentum={false}
+                  onDragEnd={handleDragEnd}
+                  variants={getDrawerVariants()}
+                  initial='closed'
+                  animate='open'
+                  exit='closed'
+                  transition={animationConfig}
+                >
+                  {/* Close Button */}
+                  {showToggleButton && (
+                    <motion.button
+                      className={cn(
+                        'absolute top-2 right-8 p-2 text-foreground cursor-pointer',
+                        clsBtnClassName
+                      )}
+                      onClick={() => setIsOpen(false)}
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <X size={20} />
+                    </motion.button>
+                  )}
+
+                  {/* Content */}
+                  <div className='h-full overflow-y-auto'>{children}</div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+        </>,
+        document.body
+      )
+    : null;
 };
 
 export default MotionDrawer;
