@@ -25,6 +25,9 @@ export const SiteNav = () => {
   const navRef = React.useRef<HTMLDivElement>(null)
   const isMobile = useMediaQuery('(max-width: 768px)')
   const [isScrolled, setIsScrolled] = React.useState(false)
+  const [isMobileNavOpen, setIsMobileNavOpen] = React.useState(false)
+
+  const closeMobileNav = () => setIsMobileNavOpen(false)
 
   // Full-width pill at the top; shrinks a little once you scroll down,
   // back to full-width the moment you're back at the top.
@@ -51,12 +54,14 @@ export const SiteNav = () => {
             direction="left"
             width={280}
             backgroundColor={'#ffffff'}
+            isOpen={isMobileNavOpen}
+            onToggle={setIsMobileNavOpen}
             clsBtnClassName="bg-slate-800 border-r border-slate-900 text-white"
             contentClassName="bg-white border-r border-slate-200 text-slate-950"
             btnClassName="bg-white text-slate-950 relative w-fit p-2 left-0 top-0 rounded-full shadow-xs border border-slate-200"
           >
             <nav className="space-y-4">
-              <Link href="/" className="mb-2 flex items-center gap-2 text-slate-950">
+              <Link href="/" onClick={closeMobileNav} className="mb-2 flex items-center gap-2 text-slate-950">
                 <Image
                   src="/logo.png"
                   alt="Reviveo"
@@ -66,19 +71,19 @@ export const SiteNav = () => {
                 />
                 <span className="font-bold">Reviveo</span>
               </Link>
-              <a href="#product" className="block rounded-sm p-2 hover:bg-slate-100">
+              <a href="#product" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
                 Product
               </a>
-              <a href="#demo" className="block rounded-sm p-2 hover:bg-slate-100">
+              <a href="#demo" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
                 Demo
               </a>
-              <a href="#how-it-works" className="block rounded-sm p-2 hover:bg-slate-100">
+              <a href="#how-it-works" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
                 How It Works
               </a>
-              <a href="#safety" className="block rounded-sm p-2 hover:bg-slate-100">
+              <a href="#safety" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
                 Safety
               </a>
-              <Link href="/dashboard" className="block rounded-sm p-2 hover:bg-slate-100">
+              <Link href="/dashboard" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
                 Dashboard
               </Link>
             </nav>

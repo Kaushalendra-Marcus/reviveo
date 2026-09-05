@@ -194,7 +194,8 @@ const MotionDrawer: React.FC<SideMenuProps> = ({
       {showToggleButton && (
         <motion.button
           className={cn(
-            `fixed z-99 text-primary cursor-pointer ${openButtonPositionClasses}`,
+            `fixed z-[99] text-primary cursor-pointer ${openButtonPositionClasses}`,
+            isOpen && 'pointer-events-none',
             btnClassName
           )}
           onClick={() => setIsOpen(true)}
@@ -210,7 +211,7 @@ const MotionDrawer: React.FC<SideMenuProps> = ({
 
       <AnimatePresence>
         {isOpen && (
-          <div className={`fixed w-full h-full top-0 left-0 z-9999 ${className}`}>
+          <div className={`fixed w-full h-full top-0 left-0 z-[9999] ${className}`}>
             {/* Overlay */}
             <motion.div
               className={`absolute w-full h-full top-0 left-0 ${overlayClassName}`}
