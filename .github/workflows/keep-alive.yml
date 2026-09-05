@@ -30,8 +30,24 @@ jobs:
             echo "RENDER_HEALTH_URL secret is not set yet -- add it in repo Settings > Secrets and variables > Actions."
             exit 0
           fi
-          status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 25 "${{ secrets.RENDER_HEALTH_URL }}")
-          echo "Health endpoint responded with HTTP $status"
-          if [ "$status" -ge 500 ] || [ "$status" = "000" ]; then
-            echo "Backend may be cold-starting or down -- this is expected occasionally and not treated as a workflow failure."
+          # Render free-tier cold starts routinely exceed 25s, so a single
+          # short curl times out (exit 28) and `bash -e` fails the whole
+          # step before any handling runs. Instead: generous per-attempt
+          # timeout, retries with backoff, and curl failures captured as
+          # "000" rather than fatal. The step always exits 0 — a pinger
+          # going red carries no signal; the next tick retries in 10 min.
+          status="000"
+          for attempt in 1 2 3; do
+            status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+              "${{ secrets.RENDER_HEALTH_URL }}" || echo "000")
+            echo "Attempt $attempt: HTTP $status"
+            if [ "$status" = "200" ]; then
+              break
+            fi
+            sleep 20
+          done
+          echo "Health endpoint final status: HTTP $status"
+          if [ "$status" != "200" ]; then
+            echo "Backend may be cold-starting or down -- routine on the free tier, next tick retries."
           fi
+          exit 0
