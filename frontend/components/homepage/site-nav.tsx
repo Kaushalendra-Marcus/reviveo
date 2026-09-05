@@ -3,18 +3,25 @@
 import React from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, Menu } from 'lucide-react'
 import { useMotionValueEvent, useScroll } from 'framer-motion'
 
 import { Button } from '@/components/ui/button'
 import { TimelineAnimation } from '@/components/ui/timeline-animation'
 import { useMediaQuery } from '@/hooks/use-media-query'
-import MotionDrawer from '@/components/ui/motion-drawer'
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 
 // Pill starts shrinking as soon as you've scrolled past this many pixels,
 // and goes back to full width once you're back within it of the top.
 const SCROLL_SHRINK_THRESHOLD = 8
+
+const MOBILE_LINKS = [
+  { href: '#product', label: 'Product' },
+  { href: '#demo', label: 'Demo' },
+  { href: '#how-it-works', label: 'How It Works' },
+  { href: '#safety', label: 'Safety' },
+]
 
 // Site-wide floating navbar for the marketing pages. Rendered as a sibling
 // of <main> in page.tsx (NOT nested inside Hero's overflow-hidden section)
@@ -50,44 +57,49 @@ export const SiteNav = () => {
       {/* Mobile top bar */}
       {isMobile && (
         <div className="flex w-full items-center justify-between gap-4 px-5 pt-4">
-          <MotionDrawer
-            direction="left"
-            width={280}
-            backgroundColor={'#ffffff'}
-            isOpen={isMobileNavOpen}
-            onToggle={setIsMobileNavOpen}
-            clsBtnClassName="bg-slate-800 border-r border-slate-900 text-white"
-            contentClassName="bg-white border-r border-slate-200 text-slate-950"
-            btnClassName="bg-white text-slate-950 relative w-fit p-2 left-0 top-0 rounded-full shadow-xs border border-slate-200"
-          >
-            <nav className="space-y-4">
-              <Link href="/" onClick={closeMobileNav} className="mb-2 flex items-center gap-2 text-slate-950">
-                <Image
-                  src="/logo.png"
-                  alt="Reviveo"
-                  width={28}
-                  height={28}
-                  className="size-7 object-contain"
-                />
-                <span className="font-bold">Reviveo</span>
-              </Link>
-              <a href="#product" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
-                Product
-              </a>
-              <a href="#demo" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
-                Demo
-              </a>
-              <a href="#how-it-works" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
-                How It Works
-              </a>
-              <a href="#safety" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
-                Safety
-              </a>
-              <Link href="/dashboard" onClick={closeMobileNav} className="block rounded-sm p-2 hover:bg-slate-100">
-                Dashboard
-              </Link>
-            </nav>
-          </MotionDrawer>
+          <Sheet open={isMobileNavOpen} onOpenChange={setIsMobileNavOpen}>
+            <SheetTrigger asChild>
+              <button
+                type="button"
+                aria-label="Open navigation menu"
+                className="flex size-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-950 shadow-xs"
+              >
+                <Menu className="size-4" />
+              </button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-3/4 max-w-xs border-slate-200 bg-white p-0 text-slate-950">
+              <SheetTitle className="sr-only">Navigation menu</SheetTitle>
+              <nav className="flex flex-col gap-1 p-5 pt-14">
+                <Link href="/" onClick={closeMobileNav} className="mb-3 flex items-center gap-2 text-slate-950">
+                  <Image
+                    src="/logo.png"
+                    alt="Reviveo"
+                    width={28}
+                    height={28}
+                    className="size-7 object-contain"
+                  />
+                  <span className="font-bold">Reviveo</span>
+                </Link>
+                {MOBILE_LINKS.map((link) => (
+                  <a
+                    key={link.href}
+                    href={link.href}
+                    onClick={closeMobileNav}
+                    className="rounded-lg px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    {link.label}
+                  </a>
+                ))}
+                <Link
+                  href="/dashboard"
+                  onClick={closeMobileNav}
+                  className="rounded-lg px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  Dashboard
+                </Link>
+              </nav>
+            </SheetContent>
+          </Sheet>
 
           <Button
             asChild
