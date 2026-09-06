@@ -1,20 +1,19 @@
-"""Subscription lifecycle handling — the pending/halted action matrix (doc
-§3.2 and §3.3).
+"""Subscription lifecycle handling — the pending/halted action matrix.
 
 Razorpay's documented subscription behavior: a failed auto-charge moves the
 subscription to `pending`; Razorpay retries the charge automatically for a
 bounded number of cycles; once retries are exhausted the subscription moves
 to `halted`. Updating the card while `pending` can auto-charge the last
-invoice; once `halted`, future invoices continue to be raised on schedule but
-the missed invoice generally needs a manual charge once the customer's
+invoice; once `halted`, future invoices continue to be raised on schedule
+but the missed invoice generally needs a manual charge once the customer's
 payment method is fixed. See:
   https://razorpay.com/docs/payments/subscriptions/payment-retries/
   https://razorpay.com/docs/payments/subscriptions/states/
 
 `payment_recovered`, `subscription_restored`, and `subscription_state` are
-kept as separate concepts everywhere in this codebase (doc §3.2) — collecting
-one outstanding invoice does not, by itself, mean the subscription lifecycle
-is restored. That distinction is recorded on `events` and finalized by
+kept as separate concepts everywhere in this codebase — collecting one
+outstanding invoice does not, by itself, mean the subscription lifecycle is
+restored. That distinction is recorded on `events` and finalized by
 `pipeline.attribution`, not decided here.
 """
 from __future__ import annotations
@@ -30,8 +29,8 @@ class LifecycleOverride:
     action: Action
     mechanism: ExecutionMechanism
     note: str
-    # When set, replaces the cause-based confidence entirely (this is a
-    # well-understood platform rule, not a probabilistic guess).
+    # When set, replaces the cause-based confidence entirely — this is a
+    # well-understood platform rule, not a probabilistic guess.
     confidence: Optional[float] = None
 
 
@@ -42,8 +41,8 @@ def resolve_subscription_action(
     cause: Cause,
     base_action: Action,
 ) -> Optional[LifecycleOverride]:
-    """Return a lifecycle override for the final Razorpay action matrix
-    (doc §3.3), or None to fall through to the cause-based decision engine.
+    """Return a lifecycle override, or None to fall through to the
+    cause-based decision engine.
 
     `base_action` is the action the cause-based whitelist would otherwise
     pick — used only to decide whether a halted-subscription redirect is
@@ -63,9 +62,9 @@ def resolve_subscription_action(
 
     if event_type == EventType.subscription_halted or subscription_state == SubscriptionState.halted.value:
         # Retries are exhausted on Razorpay's side. A same-card automatic
-        # retry cannot be assumed to work (doc §3.3) — the customer needs to
-        # fix their payment method, or we attempt a supported manual charge,
-        # or a human decides.
+        # retry can't be assumed to work — the customer needs to fix their
+        # payment method, or we attempt a supported manual charge, or a
+        # human decides.
         if cause == Cause.card_expired:
             return LifecycleOverride(
                 action=Action.send_payment_update_link,

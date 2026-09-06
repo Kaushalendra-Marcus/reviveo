@@ -1,7 +1,8 @@
-"""Application configuration loaded from environment / .env.
+"""Application settings, loaded from environment variables / .env.
 
-Secrets are never hard-coded. The app is fully functional in `synthetic` mode
-with no secrets present; `live` mode activates real Razorpay + Claude calls.
+The app runs fully in `synthetic` mode with no secrets configured — useful
+for local development and demos. `live` mode turns on real Razorpay calls
+and Groq-backed AI decisions once the relevant keys are set.
 """
 from __future__ import annotations
 
@@ -39,10 +40,9 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     notification_from_email: str = "onboarding@resend.dev"
 
-    # ── Twilio SMS (optional channel; off by default) ─────────────────────
-    # The SMS channel only fires when explicitly enabled AND fully
-    # configured AND live. Secrets are never hard-coded — set these in
-    # the environment (Render dashboard for production).
+    # Optional SMS channel via Twilio — off unless explicitly enabled and
+    # fully configured. Secrets always come from the environment, never
+    # hard-coded.
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_phone_number: str = ""
@@ -50,8 +50,8 @@ class Settings(BaseSettings):
 
     frontend_origin: str = "http://localhost:3000"
 
-    # Runtime / financial guardrails (doc §3.10) — module-level constants that
-    # are not merchant-tunable (unlike guardrail_config, which is).
+    # Runtime guardrails for the agentic loop — fixed system limits, not
+    # merchant-tunable (unlike guardrail_config, which is per-merchant).
     max_agent_steps_per_event: int = 6
     max_agent_wall_time_seconds: int = 15
     max_tool_calls_per_event: int = 6
@@ -59,8 +59,8 @@ class Settings(BaseSettings):
     max_recovery_lifetime_days: int = 7
     decision_ttl_hours: int = 24
 
-    # In-process scheduler for scheduled-action revalidation (doc §3.11).
-    # No message queue/workers per doc §0 — a periodic asyncio loop in the
+    # In-process scheduler for revalidating scheduled/retry actions.
+    # No external queue or worker process — a periodic asyncio loop in the
     # same process re-enters the same guarded execution path.
     scheduler_poll_interval_seconds: int = 30
     scheduler_enabled: bool = True

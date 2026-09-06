@@ -1,10 +1,11 @@
-"""Runtime and financial guardrails (doc §3.10-§3.13).
+"""Runtime and financial guardrails.
 
-Guardrail logic lives here, inside plain enforced Python — never inside the
-model's judgment (doc C4). Whether the caller is the deterministic pipeline
-or an agent tool, every action passes through `check_guardrails()` before
-anything is executed. If blocked, the caller gets `{blocked: True, ...}` back
-and must obey it; nothing downstream re-checks or overrides this decision.
+This is where enforcement actually happens — in plain, testable Python,
+never left to the model's judgment. Whether the caller is the deterministic
+pipeline or an agent tool, every action passes through `check_guardrails()`
+before anything executes. If blocked, the caller gets `{blocked: True, ...}`
+back and must obey it; nothing downstream re-checks or overrides this
+decision.
 """
 from __future__ import annotations
 
@@ -48,10 +49,9 @@ def check_guardrails(
     event_created_at: str,
     now: Optional[datetime] = None,
 ) -> GuardrailResult:
-    """Enforces the recovery window, retry limits, cooldowns, daily caps, and
-    the autonomous-execution amount ceiling (doc §3.10). This is the single
-    enforcement point — every check here blocks or annotates the action, it
-    never merely advises.
+    """Enforces the recovery window, retry limits, cooldowns, daily caps,
+    and the autonomous-execution amount ceiling. Every check here blocks or
+    annotates the action — it never merely advises.
     """
     now = now or datetime.now(timezone.utc)
 
@@ -59,8 +59,8 @@ def check_guardrails(
         # Escalation is always allowed — it's the safe outcome by definition.
         return GuardrailResult(blocked=False, code=None, reason=None)
 
-    # Recovery window (doc §3.1/§3.14): once the event has aged out, stop
-    # starting new attempts — the pipeline marks the event expired instead.
+    # Recovery window: once the event has aged out, stop starting new
+    # attempts — the pipeline marks the event expired instead.
     window_days = min(cfg["recovery_window_days"], settings.max_recovery_lifetime_days)
     created = _parse_iso(event_created_at)
     if now - created > timedelta(days=window_days):
@@ -104,7 +104,7 @@ def check_guardrails(
         )
 
     # Max autonomous recovery amount — doesn't block, but forces a human to
-    # sign off before this specific attempt executes (doc §3.10).
+    # sign off before this specific attempt executes.
     if amount_paise > cfg["max_autonomous_recovery_amount_paise"]:
         return GuardrailResult(
             blocked=False, code="amount_exceeds_autonomous_ceiling",

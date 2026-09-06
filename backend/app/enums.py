@@ -1,8 +1,8 @@
 """Core domain vocabulary — shared enums used across the whole pipeline.
 
 These values are also the exact strings stored in the DB and returned by the
-API, so the frontend can rely on them. Kept in one place so the state machine,
-decision engine, guardrails, and audit trail never drift apart.
+API, so the frontend can rely on them. Kept in one place so the state
+machine, decision engine, guardrails, and audit trail never drift apart.
 """
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from enum import Enum
 
 
 class EventStatus(str, Enum):
-    """Event lifecycle (doc §3.5). The event is the dashboard source of truth
-    and only moves forward; terminal states must not regress."""
+    """Event lifecycle. The event is the dashboard's source of truth and
+    only moves forward — terminal states must not regress."""
 
     detected = "detected"
     analyzing = "analyzing"
@@ -27,8 +27,8 @@ class EventStatus(str, Enum):
     failed = "failed"
 
 
-# Rank used for out-of-order / stale-webhook precedence (doc §3.5/§3.6).
-# A later event may never move the status to a lower rank.
+# Rank used to guard against out-of-order or replayed webhooks — a later
+# event may never move the status to a lower rank.
 STATUS_RANK: dict[str, int] = {
     EventStatus.detected: 0,
     EventStatus.analyzing: 1,
@@ -71,7 +71,7 @@ class Cause(str, Enum):
 
 
 class Action(str, Enum):
-    """Bounded set of recovery actions the agent may choose from."""
+    """Bounded set of recovery actions the system may choose from."""
 
     send_reminder = "send_reminder"
     smart_retry_24h = "smart_retry_24h"
@@ -89,10 +89,11 @@ class RiskTier(str, Enum):
 
 
 class ExecutionMechanism(str, Enum):
-    """Actual Razorpay mechanism recorded internally (doc §3.4).
+    """The actual Razorpay mechanism recorded internally.
 
-    The user-facing label may say 'Smart Retry', but the audit trail records
-    the real mechanism. Never implies an immutable failed payment is reopened.
+    A user-facing label might say "Smart Retry", but the audit trail always
+    records the real mechanism underneath it. A failed payment is never
+    reopened — recovery always happens through a new attempt.
     """
 
     native_subscription_retry = "native_subscription_retry"
@@ -114,7 +115,7 @@ class SubscriptionState(str, Enum):
 
 
 class AuditStage(str, Enum):
-    """Fixed stage vocabulary for the audit trail (doc C5)."""
+    """Fixed stage vocabulary for the audit trail."""
 
     detected = "detected"
     analyzed = "analyzed"

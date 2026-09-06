@@ -1,14 +1,13 @@
-"""The deterministic recovery pipeline (doc A0 `pipeline.py`; final flow
-doc §3.17). `process_event()` is the single entrypoint both the webhook
-handler and the synthetic batch runner call — it always writes exactly the
-same 6-stage audit trail (doc C5: detected/analyzed/decided/guardrail/
-executed/outcome) regardless of which branch the event takes, so the audit
-trail is uniform and testable (doc A6).
+"""The deterministic recovery pipeline. `process_event()` is the single
+entrypoint both the webhook handler and the synthetic batch runner call —
+it always writes the same six-stage audit trail (detected / analyzed /
+decided / guardrail / executed / outcome) regardless of which branch the
+event takes, so the audit trail stays uniform and testable.
 
 When `use_ai=True`, stages 2-5 are delegated to the agentic tool-use loop
-(`services.agent_service`) instead of being called directly here — but every
-tool the agent can call is the exact same guarded Python function used in
-the deterministic path, so the safety guarantees (doc C4/§3.8) are identical
+(`services.agent_service`) instead of being called directly here — but
+every tool the agent can call is the exact same guarded Python function
+used in the deterministic path, so the safety guarantees are identical
 either way.
 """
 from __future__ import annotations
@@ -49,7 +48,7 @@ def process_event(event: dict, *, use_ai: bool = False) -> dict:
     merchant_id = event["merchant_id"]
     cfg = db.get_guardrail_config(merchant_id)
 
-    # ── Stage 1: detected ───────────────────────────────────────────────────
+    # Stage 1: detected
     _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.detected,
            message=f"Event detected: {event['type']}",
            payload={"type": event["type"], "amount_paise": event["amount_paise"],
@@ -66,14 +65,14 @@ def _process_event_deterministic(event: dict, cfg: dict) -> dict:
     event_id = event["event_id"]
     merchant_id = event["merchant_id"]
 
-    # ── Stage 2: analyzed ────────────────────────────────────────────────────
+    # Stage 2: analyzed
     cause = cause_analysis.classify_cause(event.get("error_code"), event.get("error_description"))
     ai_used_for_cause = False
     fallback_used = False
     if cause == Cause.unclassified and event.get("error_code"):
-        # AI enrichment only (doc C6) — never changes the deterministic
-        # policy path; `cause` stays `unclassified` regardless of what
-        # comes back, so the low-confidence auto-escalate rule always holds.
+        # AI enrichment only — never changes the deterministic policy path;
+        # `cause` stays `unclassified` regardless of what comes back, so the
+        # low-confidence auto-escalate rule always holds.
         ai_result = ai_service.classify_unknown_cause(
             error_code=event.get("error_code"), error_description=event.get("error_description"))
         ai_used_for_cause = ai_result.used
@@ -81,10 +80,10 @@ def _process_event_deterministic(event: dict, cfg: dict) -> dict:
 
     customer = db.get_customer(merchant_id, event["customer_id"]) if event.get("customer_id") else None
     subscription = db.get_subscription(event["subscription_id"]) if event.get("subscription_id") else None
-    # Live current state drives the policy decision (a halted subscription must
-    # be decided on *now* semantics), while the persisted
+    # Live current state drives the policy decision (a halted subscription
+    # must be decided on "now" semantics), while the persisted
     # subscription_state_before keeps the ingest-time transition visible on
-    # the dashboard (doc §3.16).
+    # the dashboard.
     sub_state_live = subscription["state"] if subscription else None
 
     db.update_event(event_id, cause=cause.value, status=EventStatus.analyzing.value,
@@ -95,7 +94,7 @@ def _process_event_deterministic(event: dict, cfg: dict) -> dict:
                      "subscription_state": sub_state_live},
            ai_used=ai_used_for_cause, fallback_triggered=fallback_used)
 
-    # ── Stage 3: decided ─────────────────────────────────────────────────────
+    # Stage 3: decided
     attempt_count = db.count_attempts(event_id)
     decision = decision_engine.decide(
         cause=cause, event_type=event["type"], subscription_state=sub_state_live,
@@ -124,7 +123,7 @@ def _process_event_deterministic(event: dict, cfg: dict) -> dict:
            ai_latency_ms=reasoning_result.latency_ms,
            fallback_triggered=reasoning_result.fallback_triggered)
 
-    # ── Stage 4: guardrail ───────────────────────────────────────────────────
+    # Stage 4: guardrail
     last_attempt_at = db.last_attempt_time(event_id)
     g = guardrails.check_guardrails(
         merchant_id=merchant_id, cfg=cfg, action=decision.action,
@@ -143,7 +142,7 @@ def _process_event_deterministic(event: dict, cfg: dict) -> dict:
         or (g.blocked and g.code not in ("recovery_window_expired", "cooldown_active"))
     )
 
-    # ── Stage 5 & 6: executed / outcome ──────────────────────────────────────
+    # Stages 5 & 6: executed / outcome
     if g.blocked and g.code == "recovery_window_expired":
         attribution.mark_expired(event_id, g.reason or "recovery window expired")
         _audit(event_id=event_id, merchant_id=merchant_id, stage=AuditStage.executed,
@@ -221,8 +220,8 @@ _RESOLVED_STATUSES = {
 def revalidate_and_execute_scheduled(attempt: dict) -> None:
     """Before any scheduled action executes: revalidate event status,
     recovery state, recovery window, cooldown, retry count, and every
-    guardrail — this re-enters the exact same policy + execution path,
-    never a shortcut (doc §3.11).
+    guardrail. This re-enters the exact same policy and execution path —
+    never a shortcut.
     """
     event = db.get_event(attempt["event_id"])
     if event is None or event["status"] in _RESOLVED_STATUSES:
@@ -283,11 +282,10 @@ def revalidate_and_execute_scheduled(attempt: dict) -> None:
 
 
 def reanalyze_decision(event: dict) -> dict:
-    """Re-runs cause classification + the decision engine against the
-    event's *current* state (doc §3.13: "if a delayed action or approval is
-    stale, re-check/re-analyze before execution"). Used by the approval
-    endpoint when the stored decision has passed its `decision_expires_at`.
-    Does not execute anything — only returns a fresh action/mechanism.
+    """Re-runs cause classification and the decision engine against the
+    event's current state. Used by the approval endpoint when the stored
+    decision has passed its `decision_expires_at`. Does not execute
+    anything — only returns a fresh action/mechanism.
     """
     merchant_id = event["merchant_id"]
     cfg = db.get_guardrail_config(merchant_id)

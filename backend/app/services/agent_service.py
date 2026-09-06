@@ -1,17 +1,15 @@
-"""Agentic tool-use orchestration loop (doc C0-C5). Replaces the fixed
-deterministic sequence with the model genuinely choosing which tool to call
-next — but every tool is backed by the exact same guarded Python functions
-the deterministic pipeline uses (doc C4: guardrail logic lives inside the
-tool's Python code, never in the model's judgment), so the safety
-guarantees are identical either way; only who drives the sequence changes.
+"""Agentic tool-use orchestration loop. Replaces the fixed deterministic
+sequence with the model genuinely choosing which tool to call next — but
+every tool is backed by the exact same guarded Python functions the
+deterministic pipeline uses, so the safety guarantees are identical either
+way; only who drives the sequence changes.
 
-No agent framework (doc C1) — native Groq tool-calling (OpenAI-compatible
-function calling), 6 tools, a short loop bounded by
+No agent framework — native Groq tool-calling (OpenAI-compatible function
+calling), six tools, a short loop bounded by
 MAX_AGENT_STEPS_PER_EVENT / MAX_TOOL_CALLS_PER_EVENT /
-MAX_AGENT_WALL_TIME_SECONDS (doc §3.10). If the model stalls, loops, or the
-API call fails outright, the loop always resolves to an escalation rather
-than ever leaving an event stuck (doc C9/C10 — "what happens if the AI call
-fails?").
+MAX_AGENT_WALL_TIME_SECONDS. If the model stalls, loops, or the API call
+fails outright, the loop always resolves to an escalation rather than ever
+leaving an event stuck.
 """
 from __future__ import annotations
 
@@ -30,10 +28,10 @@ logger = get_logger("reviveo.agent_service")
 
 AGENT_VERSION = "agent-v1"
 
-# doc C3 — exactly these six tools, written once in the provider-neutral
+# Exactly these six tools, written once in a provider-neutral
 # {name, description, input_schema} shape and wrapped below into Groq's
-# OpenAI-compatible {"type": "function", "function": {...}} shape — keeping
-# one source of truth avoids retyping six schemas by hand on a provider swap.
+# OpenAI-compatible {"type": "function", "function": {...}} shape, so a
+# provider swap only means retyping the wrapping, not the schemas.
 _TOOLS_RAW = [
     {
         "name": "get_customer_history",
@@ -231,7 +229,7 @@ def run_agent_for_event(*, event: dict, cfg: dict, audit: Callable[..., None]) -
                 model=settings.ai_model_fast, max_completion_tokens=1024,
                 messages=messages, tools=_TOOLS, tool_choice="auto",
             )
-        except Exception as exc:  # noqa: BLE001 — the agent loop must never crash the pipeline
+        except Exception as exc:  # the agent loop must never crash the pipeline
             logger.warning("agent Groq call failed", extra={"context": {"error": str(exc)}})
             _force_escalate(ctx, merchant_id, f"AI call failed: {exc}", audit)
             break
@@ -442,10 +440,11 @@ def _tool_escalate_to_human(args: dict, ctx: _AgentContext, merchant_id: str, au
 
 
 def _force_escalate(ctx: _AgentContext, merchant_id: str, reason: str, audit: Callable) -> None:
-    """The deterministic safety net (doc C10): whatever goes wrong in the
-    loop — timeout, tool-call budget, API failure, or a model that just
-    stops without deciding — this always resolves to a real, visible
-    escalation instead of a silently stuck event."""
+    """The deterministic safety net: whatever goes wrong in the loop —
+    timeout, tool-call budget, API failure, or a model that just stops
+    without deciding — this always resolves to a real, visible escalation
+    instead of a silently stuck event.
+    """
     approval_id = db.insert_approval({
         "merchant_id": merchant_id, "event_id": ctx.event["event_id"],
         "proposed_action": ctx.checked_action.value if ctx.checked_action else Action.escalate_to_human.value,

@@ -1,19 +1,18 @@
-"""Deterministic guardrails — enforcement boundary (doc §3.10, C4).
+"""Compatibility wrapper around `domain.guardrails.check_guardrails`.
 
-Compatibility shim for `agent/tools.py` and any legacy import of
-`app.guardrails.guardrails.evaluate`. The live enforcement point is
-`app.domain.guardrails.check_guardrails` — this shim delegates there so
-the two implementations are no longer divergent (single source of truth).
-New code should import `domain.guardrails.check_guardrails` directly.
+`domain/guardrails.py` is the single source of truth for enforcement; this
+module just translates its result shape into the older
+`GuardrailResult(passed/blocked_reasons)` interface that `agent/tools.py`
+still expects. New code should import `domain.guardrails.check_guardrails`
+directly instead of this wrapper.
 
-The agent may propose, but these checks decide. Every check reads live state
-(attempts, counters, config) from the DB; nothing here trusts caller-supplied
-"current values". `escalate_to_human` always passes.
+Every check reads live state (attempts, counters, config) from the DB —
+nothing here trusts caller-supplied "current values".
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from .. import db
@@ -66,13 +65,9 @@ def evaluate(
     now: Optional[datetime] = None,
     exclude_attempt_id: Optional[str] = None,
 ) -> GuardrailResult:
-    """Compatibility wrapper around `domain.guardrails.check_guardrails`.
-
-    Translates the canonical `GuardrailResult(blocked/code/reason)` into the
-    legacy `GuardrailResult(passed/blocked_reasons)` shape so
-    `agent/tools.py` and any external callers that imported this path keep
-    working after the consolidation.
-    """
+    """Legacy-shaped wrapper around `domain.guardrails.check_guardrails`,
+    kept so `agent/tools.py` and any external callers built against the old
+    interface keep working."""
     from ..domain.guardrails import check_guardrails as _live_check
 
     action = Action(action)
@@ -81,7 +76,6 @@ def evaluate(
         raise ValueError(f"No guardrail config for merchant '{merchant_id}'")
     now = now or datetime.now(timezone.utc)
 
-    # Delegate to live implementation (single source of truth)
     live = _live_check(
         merchant_id=merchant_id, cfg=cfg, action=action,
         amount_paise=amount_paise, attempt_count=db.count_attempts(event["event_id"]),
@@ -94,7 +88,7 @@ def evaluate(
     if live.blocked:
         blocked.append(live.reason or live.code or "blocked by guardrails")
     if live.code == "cooldown_active" and live.retry_after:
-        # Preserve legacy detailed cooldown message format for tool consumers
+        # Preserve the older, more detailed cooldown message format.
         try:
             elapsed = now - _parse_ts(db.last_attempt_time(event["event_id"], exclude=exclude_attempt_id) or event["created_at"])
             blocked = [f"cooldown active ({cfg['cooldown_hours']}h between retries; last attempt {elapsed.total_seconds() / 3600:.1f}h ago)"]
@@ -105,12 +99,8 @@ def evaluate(
             f"amount ₹{amount_paise / 100:.0f} exceeds autonomous limit "
             f"₹{cfg['max_autonomous_recovery_amount_paise'] / 100:.0f} — approval required"
         )
-    # Daily cap and channel checks are already inside live result; map code→message
     if live.code in ("daily_contact_cap_reached", "daily_recovery_value_cap_reached") and not blocked:
         blocked.append(live.reason or live.code)
-    if live.code == "amount_exceeds_autonomous_ceiling":
-        # Not blocked, just requires approval — surface as warning
-        pass
 
     warnings.append(
         f"runtime limits: steps<={settings.max_agent_steps_per_event}, "

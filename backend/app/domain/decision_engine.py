@@ -1,14 +1,14 @@
 """Deterministic decision policy — the single source of truth for which
 action a cause is allowed to produce, and at what confidence/risk it may
-auto-execute (doc §3.8, §3.9).
+auto-execute.
 
-This module is the enforcement point for the "agent proposes, policy
-decides" boundary (doc C4/§3.8): whether the caller is the synchronous
-deterministic pipeline or the agentic tool-use loop, every proposed action
-passes through `decide()`. The LLM never invents an action, changes a
-threshold, or bypasses this whitelist — it can only choose among actions this
-module already allows for the classified cause, and the confidence/approval
-outcome is always recomputed here, never trusted from the model.
+This is the enforcement point for "the agent proposes, the policy decides":
+whether the caller is the synchronous deterministic pipeline or the agentic
+tool-use loop, every proposed action passes through `decide()`. The model
+never invents an action, changes a threshold, or bypasses this whitelist —
+it can only choose among actions this module already allows for the
+classified cause, and confidence/approval is always recomputed here, never
+trusted from the model.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from . import subscription_lifecycle
 
 POLICY_VERSION = "policy-v1"
 
-# Hard whitelist (doc §3.9). Unclassified causes may only escalate.
+# Hard whitelist. Unclassified causes may only escalate.
 ALLOWED_ACTIONS_BY_CAUSE: dict[Cause, tuple[Action, ...]] = {
     Cause.card_expired: (Action.send_payment_update_link, Action.escalate_to_human),
     Cause.insufficient_funds: (Action.smart_retry_24h, Action.send_reminder, Action.escalate_to_human),
@@ -30,7 +30,7 @@ ALLOWED_ACTIONS_BY_CAUSE: dict[Cause, tuple[Action, ...]] = {
     Cause.unclassified: (Action.escalate_to_human,),
 }
 
-# Explicit risk tiers (doc §3.9).
+# Explicit risk tiers.
 ACTION_RISK: dict[Action, RiskTier] = {
     Action.send_reminder: RiskTier.low,
     Action.smart_retry_24h: RiskTier.low,
@@ -41,9 +41,8 @@ ACTION_RISK: dict[Action, RiskTier] = {
     Action.escalate_to_human: RiskTier.safe,
 }
 
-# Default internal execution mechanism per action (doc §3.4) when no
-# subscription-lifecycle override and no one-time/subscription context
-# distinction applies. `select_execution_mechanism` refines this.
+# Default internal execution mechanism per action when no subscription-
+# lifecycle override applies. `select_execution_mechanism` refines this.
 _DEFAULT_MECHANISM_BY_ACTION: dict[Action, Optional[ExecutionMechanism]] = {
     Action.send_reminder: ExecutionMechanism.reminder_only,
     Action.smart_retry_24h: ExecutionMechanism.scheduled_recovery_payment,
@@ -54,11 +53,11 @@ _DEFAULT_MECHANISM_BY_ACTION: dict[Action, Optional[ExecutionMechanism]] = {
     Action.escalate_to_human: None,
 }
 
-# Deterministic baseline confidence per cause, used when no AI reasoning is
-# requested (doc: batch runs default use_ai=False) and as the starting point
-# the agent's own confidence is sanity-checked against. Reflects how
-# reliably each cause bucket is fixed by its default action in practice —
-# an explicit, explainable heuristic, not a black box.
+# Deterministic baseline confidence per cause — used when no AI reasoning is
+# requested, and as the starting point an agent's own confidence is sanity-
+# checked against. Reflects how reliably each cause bucket is fixed by its
+# default action in practice — an explicit, explainable heuristic rather
+# than a black box.
 _BASE_CONFIDENCE_BY_CAUSE: dict[Cause, float] = {
     Cause.payment_timeout: 0.90,     # transient — retrying now is very likely to work
     Cause.insufficient_funds: 0.80,  # waiting/reminding is a well-understood fix
@@ -68,13 +67,8 @@ _BASE_CONFIDENCE_BY_CAUSE: dict[Cause, float] = {
     Cause.unclassified: 0.20,        # always escalate
 }
 
-# Public aliases. The underscore-prefixed names above are the canonical
-# source of truth used by every live code path (decide()/choose_action()).
-# These aliases exist only so backend/app/agent/tools.py — a legacy,
-# currently-unwired agent implementation kept for reference (see that
-# module's docstring) — doesn't raise ImportError if it's ever imported.
-# Audit note (2026-08-24): fixing this import was the cheapest safe fix
-# available; it does not mean agent/tools.py is wired into the running app.
+# Public aliases kept for `agent/tools.py`, which is not wired into the
+# running pipeline but is kept in the repo for reference.
 ACTION_MECHANISM = _DEFAULT_MECHANISM_BY_ACTION
 CAUSE_CONFIDENCE = _BASE_CONFIDENCE_BY_CAUSE
 
@@ -95,19 +89,17 @@ def select_execution_mechanism(
 ) -> Optional[ExecutionMechanism]:
     """`send_payment_update_link` uses the subscription card-change flow
     (Checkout) in a subscription context, and a Payment Link for a one-time
-    obligation (doc §3.3 final action matrix)."""
+    obligation."""
     if action == Action.send_payment_update_link and subscription_state not in (None, "none"):
         return ExecutionMechanism.checkout
     return _DEFAULT_MECHANISM_BY_ACTION.get(action)
 
 
 def compute_confidence(cause: Cause, customer: Optional[dict], attempt_count: int) -> float:
-    """Deterministic confidence heuristic (doc: "Confidence level, Customer
-    history, ... Previous recovery attempts" are inputs to the decision).
-
-    Starts from the cause's base rate, then adjusts for customer history and
-    how many attempts have already been made on this event — repeated
-    failures on the same event should reduce confidence, not stay flat.
+    """Deterministic confidence heuristic. Starts from the cause's base
+    rate, then adjusts for customer history and how many attempts have
+    already been made on this event — repeated failures on the same event
+    should reduce confidence, not stay flat.
     """
     confidence = _BASE_CONFIDENCE_BY_CAUSE.get(cause, 0.20)
 
@@ -126,11 +118,12 @@ def compute_confidence(cause: Cause, customer: Optional[dict], attempt_count: in
 def choose_action(
     *, cause: Cause, event_type: EventType | str, subscription_state: Optional[str]
 ) -> tuple[Action, Optional[ExecutionMechanism], str, Optional[float]]:
-    """Deterministic default action for a cause+context — the policy's own
-    pick, used directly by the non-AI pipeline and as the ground truth an
-    agent-proposed action is validated against. The fourth element is a
-    confidence override (set only when a lifecycle rule is a well-understood
-    platform fact rather than a probabilistic guess) — None otherwise."""
+    """Deterministic default action for a cause+context — used directly by
+    the non-AI pipeline and as the ground truth an agent-proposed action is
+    validated against. The fourth element is a confidence override, set
+    only when a lifecycle rule is a well-understood platform fact rather
+    than a probabilistic guess.
+    """
     allowed = ALLOWED_ACTIONS_BY_CAUSE.get(cause, (Action.escalate_to_human,))
     base_action = allowed[0]
 
@@ -166,12 +159,11 @@ def decide(
     low_confidence: float,
     requested_action: Optional[Action] = None,
 ) -> Decision:
-    """The single deterministic authority for action selection (doc §3.8).
+    """The single deterministic authority for action selection.
 
-    `requested_action` is what an AI agent is proposing (via the
-    `check_guardrails`/decision tool). If it isn't in the whitelist for this
-    cause, the proposal is rejected outright and replaced with
-    `escalate_to_human` — the model cannot invent an action.
+    `requested_action` is what an AI agent is proposing. If it isn't in the
+    whitelist for this cause, the proposal is rejected outright and
+    replaced with `escalate_to_human` — the model cannot invent an action.
     """
     default_action, default_mechanism, default_reasoning, confidence_override = choose_action(
         cause=cause, event_type=event_type, subscription_state=subscription_state,
@@ -200,8 +192,7 @@ def decide(
         else compute_confidence(cause, customer, attempt_count)
     )
 
-    # Low confidence always escalates, regardless of which action was chosen
-    # (doc §3.9: "<0.50 low → escalation only").
+    # Low confidence always escalates, regardless of which action was chosen.
     if confidence < low_confidence and action != Action.escalate_to_human:
         action = Action.escalate_to_human
         mechanism = None
